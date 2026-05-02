@@ -2,6 +2,7 @@
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local HttpService = game:GetService("HttpService")
+local VirtualUser = game:GetService("VirtualUser")
 
 local router = require(ReplicatedStorage.ClientModules.Core.RouterClient.RouterClient)
 local cd = require(ReplicatedStorage.ClientModules.Core.ClientData)
@@ -19,318 +20,430 @@ local plr = Players.LocalPlayer
 --==================================================
 -- JSON Helpers
 --==================================================
-local function lEncode(t) return HttpService:JSONEncode(t) end
-local function lDecode(s) return HttpService:JSONDecode(s) end
+local function lEncode(t)
+	return HttpService:JSONEncode(t)
+end
+local function lDecode(s)
+	return HttpService:JSONDecode(s)
+end
 
 local function loadMain()
-    local Rayfield = loadstring(game:HttpGet("https://raw.githubusercontent.com/SiriusSoftwareLtd/Rayfield/main/source.lua"))()
+	local Rayfield =
+		loadstring(game:HttpGet("https://raw.githubusercontent.com/SiriusSoftwareLtd/Rayfield/main/source.lua"))()
 
-    local Window = Rayfield:CreateWindow({
-        Name = "Cubix . House Cloner ",
-        LoadingTitle = "Cubix",
-        LoadingSubtitle = "House Cloner",
-        Theme = "Amethyst",
-        Discord = {
-            Enabled = true,
-            Invite = "https://discord.gg/VVsxaBNakm",
-            RememberJoins = false,
-        },
-    })
+	local Window = Rayfield:CreateWindow({
+		Name = "Cubix . House Cloner ",
+		LoadingTitle = "Cubix",
+		LoadingSubtitle = "House Cloner",
+		Theme = "Amethyst",
+		Discord = {
+			Enabled = true,
+			Invite = "https://discord.gg/VVsxaBNakm",
+			RememberJoins = false,
+		},
+	})
 
-    local Manager = Window:CreateTab("Manager", "trending-up")
-    local Tab = Window:CreateTab("Main", "home")
-    local BuyerTab = Window:CreateTab("House Buyer", "shopping-bag")
-    local TradeTab = Window:CreateTab("Trading", "repeat")
+	local afkEnabled = false
+	plr.Idled:Connect(function()
+		VirtualUser:CaptureController()
+		VirtualUser:ClickButton2(Vector2.new(0, 0))
+		
+		if not afkEnabled then
+			afkEnabled = true
+			Rayfield:Notify({
+				Title = "AFK",
+				Content = "Anti-AFK is now active",
+				Duration = 3
+			})
+		end
+	end)
 
-    -- ==================== MANAGER TAB ====================
-    Manager:CreateSection("Scan Information")
-    local furniture_label = Manager:CreateLabel("House Furniture: 0 ($0)", "armchair")
-    local textures_label = Manager:CreateLabel("House Textures: 0 ($0)", "grid-2x2")
-    local ambiance_label = Manager:CreateLabel("House Ambiance: No", "sun")
-    local type_label = Manager:CreateLabel("House Type: -", "home")
+	local Manager = Window:CreateTab("Manager", "trending-up")
+	local Tab = Window:CreateTab("Main", "home")
+	local BuyerTab = Window:CreateTab("House Buyer", "shopping-bag")
+	local TradeTab = Window:CreateTab("Trading", "repeat")
 
-    Manager:CreateSection("Process Status")
-    local status_label = Manager:CreateLabel("Building Status: Idle", "activity")
-    local prog_label = Manager:CreateLabel("Building Prog: -", "trending-up")
-    local item_label = Manager:CreateLabel("Items: -", "box")
+	-- ==================== MANAGER TAB ====================
+	Manager:CreateSection("Scan Information")
+	local furniture_label = Manager:CreateLabel("House Furniture: 0 ($0)", "armchair")
+	local textures_label = Manager:CreateLabel("House Textures: 0 ($0)", "grid-2x2")
+	local ambiance_label = Manager:CreateLabel("House Ambiance: No", "sun")
+	local type_label = Manager:CreateLabel("House Type: -", "home")
 
-    local function setscaninfo(f_count, f_cost, t_count, t_cost, amb, typ)
-        pcall(function()
-            furniture_label:Set("House Furniture: " .. f_count .. " ($" .. f_cost .. ")")
-            textures_label:Set("House Textures: " .. t_count .. " ($" .. t_cost .. ")")
-            ambiance_label:Set("House Ambiance: " .. amb)
-            type_label:Set("House Type: " .. typ)
-        end)
-    end
+	Manager:CreateSection("Process Status")
+	local status_label = Manager:CreateLabel("Building Status: Idle", "activity")
+	local prog_label = Manager:CreateLabel("Building Prog: -", "trending-up")
+	local item_label = Manager:CreateLabel("Items: -", "box")
 
-    local function updatestatus(s) pcall(function() status_label:Set("Building Status: " .. s) end) end
-    local function updateprog(p) pcall(function() prog_label:Set("Building Prog: " .. p) end) end
-    local function updateitem(i) pcall(function() item_label:Set("Items: " .. i) end) end
 
-    updatestatus("Idle")
-    updateprog("-")
-    updateitem("-")
 
-    -- ==================== SHARED OWNED HOUSES SYSTEM ====================
-    local ownedHouseList = {}
-    local ownedHouseMap = {} -- name → house_id
+	local function setscaninfo(f_count, f_cost, t_count, t_cost, amb, typ)
+		pcall(function()
+			furniture_label:Set("House Furniture: " .. f_count .. " ($" .. f_cost .. ")")
+			textures_label:Set("House Textures: " .. t_count .. " ($" .. t_cost .. ")")
+			ambiance_label:Set("House Ambiance: " .. amb)
+			type_label:Set("House Type: " .. typ)
+		end)
+	end
 
-    local ownedDropdown  -- Sell dropdown
-    local tradeDropdown  -- Trade dropdown
+	local function updatestatus(s)
+		pcall(function()
+			status_label:Set("Building Status: " .. s)
+		end)
+	end
+	local function updateprog(p)
+		pcall(function()
+			prog_label:Set("Building Prog: " .. p)
+		end)
+	end
+	local function updateitem(i)
+		pcall(function()
+			item_label:Set("Items: " .. i)
+		end)
+	end
 
-    local function refreshOwnedHouses()
-        table.clear(ownedHouseList)
-        table.clear(ownedHouseMap)
+	updatestatus("Idle")
+	updateprog("-")
+	updateitem("-")
 
-        for _, house in pairs(ClientData.get("house_manager") or {}) do
-            table.insert(ownedHouseList, house.name)
-            ownedHouseMap[house.name] = house.house_id
-        end
+	-- ==================== SHARED OWNED HOUSES SYSTEM ====================
+	local ownedHouseList = {}
+	local ownedHouseMap = {} -- name → house_id
 
-        table.sort(ownedHouseList)
+	local ownedDropdown -- Sell dropdown
+	local tradeDropdown -- Trade dropdown
 
-        -- Refresh Sell Dropdown
-        if ownedDropdown then
-            pcall(function() ownedDropdown:Refresh(ownedHouseList, true) end)
-        end
+	local function refreshOwnedHouses()
+		table.clear(ownedHouseList)
+		table.clear(ownedHouseMap)
 
-        -- Refresh Trade Dropdown
-        if tradeDropdown then
-            pcall(function() tradeDropdown:Refresh(ownedHouseList, true) end)
-        end
-    end
+		for _, house in pairs(ClientData.get("house_manager") or {}) do
+			table.insert(ownedHouseList, house.name)
+			ownedHouseMap[house.name] = house.house_id
+		end
 
-    -- ==================== HOUSE BUYER TAB ====================
-    local selectedHouseKind = nil
-    local selectedHouseId = nil
-    local autoBuy = false
-    local buyAmount = 1
+		table.sort(ownedHouseList)
 
-    local houseList = {}
-    local houseMap = {}
-    for _, data in pairs(HouseDB) do
-        if data.is_for_sale then
-            table.insert(houseList, data.name)
-            houseMap[data.name] = data.kind
-        end
-    end
-    table.sort(houseList)
+		-- Refresh Sell Dropdown
+		if ownedDropdown then
+			pcall(function()
+				ownedDropdown:Refresh(ownedHouseList, true)
+			end)
+		end
 
-    BuyerTab:CreateDropdown({
-        Name = "Select House To Buy",
-        Options = houseList,
-        Callback = function(opt)
-            local v = typeof(opt) == "table" and opt[1] or opt
-            selectedHouseKind = houseMap[v]
-        end,
-    })
+		-- Refresh Trade Dropdown
+		if tradeDropdown then
+			pcall(function()
+				tradeDropdown:Refresh(ownedHouseList, true)
+			end)
+		end
+	end
 
-    ownedDropdown = BuyerTab:CreateDropdown({
-        Name = "Select Owned House To Sell",
-        Options = ownedHouseList,
-        Callback = function(opt)
-            local v = typeof(opt) == "table" and opt[1] or opt
-            selectedHouseId = ownedHouseMap[v]
-        end,
-    })
+	-- ==================== HOUSE BUYER TAB ====================
+	local selectedHouseKinds = {}
+	local selectedHouseId = nil
+	local autoBuy = false
+	local buyAmount = 1
 
-    BuyerTab:CreateInput({
-        Name = "Amount of Houses to Buy",
-        PlaceholderText = "Enter number...",
-        RemoveTextAfterFocusLost = false,
-        Callback = function(t)
-            local n = tonumber(t)
-            if n and n > 0 then
-                buyAmount = math.floor(n)
-                Rayfield:Notify({ Title = "Auto Buy", Content = "Set to " .. n, Duration = 3 })
-            end
-        end,
-    })
+	-- ==================== HOUSE LIST ====================
+	local houseList = {}
+	local houseMap = {}
 
-    local function buyHouse()
-        if not selectedHouseKind then
-            Rayfield:Notify({ Title = "Auto Buy", Content = "No house selected ❌", Duration = 3 })
-            return false
-        end
+	for _, data in pairs(HouseDB) do
+		if data.is_for_sale then
+			table.insert(houseList, data.name)
+			houseMap[data.name] = data.kind
+		end
+	end
 
-        local before = {}
-        for _, h in pairs(ClientData.get("house_manager") or {}) do
-            before[h.house_id] = true
-        end
+	table.sort(houseList)
 
-        local success = pcall(function()
-            Router.get("HousingAPI/BuyHouseWithAddons"):InvokeServer(selectedHouseKind, {}, Color3.fromRGB(255, 182, 193))
-        end)
+	-- ==================== MULTI SELECT DROPDOWN ====================
+	BuyerTab:CreateDropdown({
+		Name = "Select House To Buy",
+		Options = houseList,
+		MultipleOptions = true,
+		Callback = function(opt)
+			table.clear(selectedHouseKinds)
 
-        if success then
-            Rayfield:Notify({ Title = "Auto Buy", Content = "Buying house... 🏠", Duration = 3 })
-            task.wait(1)
+			if typeof(opt) == "table" then
+				for _, v in ipairs(opt) do
+					if houseMap[v] then
+						table.insert(selectedHouseKinds, houseMap[v])
+					end
+				end
+			else
+				if houseMap[opt] then
+					table.insert(selectedHouseKinds, houseMap[opt])
+				end
+			end
+		end,
+	})
 
-            -- Auto rename
-            local current = ClientData.get("house_manager") or {}
-            local map = {}
-            for _, h in pairs(current) do map[h.house_id] = h end
+	-- ==================== INPUT ====================
+	BuyerTab:CreateInput({
+		Name = "Amount of Houses to Buy",
+		PlaceholderText = "Enter number...",
+		RemoveTextAfterFocusLost = false,
+		Callback = function(t)
+			local n = tonumber(t)
+			if n and n > 0 then
+				buyAmount = math.floor(n)
+				Rayfield:Notify({ Title = "Auto Buy", Content = "Set to " .. n, Duration = 3 })
+			end
+		end,
+	})
 
-            for id, house in pairs(map) do
-                if not before[id] then
-                    local max = 0
-                    for _, h in pairs(map) do
-                        local num = tonumber(string.match(h.name or "", "Kalirem (%d+)")) or 0
-                        if num > max then max = num end
-                    end
-                    local newName = "Kalirem " .. (max + 1)
-                    pcall(function() Router.get("HousingAPI/RenameHouse"):FireServer(id, newName) end)
-                    Rayfield:Notify({ Title = "Rename", Content = newName, Duration = 3 })
-                end
-            end
+	-- ==================== RENAME FUNCTION (SHARED) ====================
+	local function autoRenameNewHouse(before)
+		local current = ClientData.get("house_manager") or {}
 
-            refreshOwnedHouses()
-            Rayfield:Notify({ Title = "Auto Buy", Content = "House bought ✔", Duration = 3 })
-            return true
-        else
-            Rayfield:Notify({ Title = "Auto Buy", Content = "Buy failed ❌", Duration = 3 })
-        end
-        return false
-    end
+		local map = {}
+		for _, h in pairs(current) do
+			map[h.house_id] = h
+		end
 
-    BuyerTab:CreateButton({
-        Name = "Sell Selected House",
-        Callback = function()
-            if not selectedHouseId then
-                Rayfield:Notify({ Title = "Sell", Content = "No house selected ❌", Duration = 3 })
-                return
-            end
-            pcall(function() Router.get("HousingAPI/SellHouse"):InvokeServer(selectedHouseId) end)
-            Rayfield:Notify({ Title = "Sell", Content = "House sold ✔", Duration = 3 })
-            task.wait(1)
-            refreshOwnedHouses()
-        end,
-    })
+		for id, house in pairs(map) do
+			if not before[id] then
+				local max = 0
 
-    BuyerTab:CreateToggle({
-        Name = "Auto Buy",
-        Callback = function(v)
-            autoBuy = v
-            if v then
-                task.spawn(function()
-                    local c = 0
-                    while autoBuy and c < buyAmount do
-                        if buyHouse() then c += 1 end
-                        task.wait(0.5)
-                    end
-                    autoBuy = false
-                end)
-            end
-        end,
-    })
+				for _, h in pairs(map) do
+					local num = tonumber(string.match(h.name or "", "Kalirem (%d+)")) or 0
+					if num > max then
+						max = num
+					end
+				end
 
-    -- ==================== TRADING TAB ====================
-    local tradingRunning = false
-    local tradeSelections = {}
-    local lastTradeCount = -1
+				local newName = "Kalirem " .. (max + 1)
 
-    tradeDropdown = TradeTab:CreateDropdown({
-        Name = "Select Houses To Trade",
-        Options = ownedHouseList,
-        CurrentOption = {},
-        MultipleOptions = true,
-        Callback = function(opts)
-            table.clear(tradeSelections)
+				pcall(function()
+					Router.get("HousingAPI/RenameHouse"):FireServer(id, newName)
+				end)
 
-            -- Correct way to loop through Rayfield multiple selections
-            for _, name in ipairs(opts or {}) do
-                local id = ownedHouseMap[name]
-                if id then
-                    tradeSelections[id] = name
-                end
-            end
+				Rayfield:Notify({
+					Title = "Rename",
+					Content = newName,
+					Duration = 2
+				})
+			end
+		end
+	end
 
-            -- Properly count how many houses are selected
-            local selectedCount = 0
-            for _ in pairs(tradeSelections) do
-                selectedCount = selectedCount + 1
-            end
+	-- ==================== BUY FUNCTION (USED EVERYWHERE) ====================
+	local function buyHouse()
+		if #selectedHouseKinds == 0 then
+			Rayfield:Notify({ Title = "Auto Buy", Content = "No house selected ❌", Duration = 3 })
+			return false
+		end
 
-            -- Notify only when the count actually changes
-            if selectedCount ~= lastTradeCount then
-                lastTradeCount = selectedCount
-                Rayfield:Notify({ Title = "Trading", Content = selectedCount .. " houses selected" })   -- Uses your notify function
-            end
-        end,
-    })
+		for _, kind in ipairs(selectedHouseKinds) do
+			-- Track BEFORE
+			local before = {}
+			for _, h in pairs(ClientData.get("house_manager") or {}) do
+				before[h.house_id] = true
+			end
 
-    local function waitUntilHouseGone(id, timeout)
-        timeout = timeout or 300
-        local start = tick()
-        while tick() - start < timeout do
-            local found = false
-            for _, h in pairs(ClientData.get("house_manager") or {}) do
-                if h.house_id == id then found = true break end
-            end
-            if not found then return true end
-            task.wait(1)
-        end
-        return false
-    end
+			local success = pcall(function()
+				Router.get("HousingAPI/BuyHouseWithAddons")
+					:InvokeServer(kind, {}, Color3.fromRGB(255, 182, 193))
+			end)
 
-    local function processTrade()
-        if tradingRunning then return end
-        tradingRunning = true
-        Rayfield:Notify({ Title = "Trading", Content = "Started dynamic queue", Duration = 3 })
+			if success then
+				Rayfield:Notify({
+					Title = "Auto Buy",
+					Content = "Buying " .. tostring(kind) .. " 🏠",
+					Duration = 2
+				})
 
-        task.spawn(function()
-            while tradingRunning do
-                refreshOwnedHouses()
+				task.wait(1)
 
-                local currentQueue = {}
-                for id, _ in pairs(tradeSelections) do
-                    table.insert(currentQueue, id)
-                end
+				-- RENAME HERE
+				autoRenameNewHouse(before)
+			else
+				Rayfield:Notify({
+					Title = "Auto Buy",
+					Content = "Failed " .. tostring(kind) .. " ❌",
+					Duration = 2
+				})
+			end
 
-                if #currentQueue == 0 then
-                    Rayfield:Notify({ Title = "Trading", Content = "Queue finished ✅", Duration = 3 })
-                    break
-                end
+			task.wait(0.5)
+		end
 
-                local id = currentQueue[1]
-                local name = tradeSelections[id]
+		refreshOwnedHouses()
+		return true
+	end
+
+	-- ==================== SELL BUTTON ====================
+	BuyerTab:CreateButton({
+		Name = "Sell Selected House",
+		Callback = function()
+			if not selectedHouseId then
+				Rayfield:Notify({ Title = "Sell", Content = "No house selected ❌", Duration = 3 })
+				return
+			end
+
+			pcall(function()
+				Router.get("HousingAPI/SellHouse"):InvokeServer(selectedHouseId)
+			end)
+
+			Rayfield:Notify({ Title = "Sell", Content = "House sold ✔", Duration = 3 })
+
+			task.wait(1)
+			refreshOwnedHouses()
+		end,
+	})
+
+	-- ==================== ONE-TIME BUY ====================
+	BuyerTab:CreateButton({
+		Name = "Buy Selected House (One-Time)",
+		Callback = function()
+			buyHouse()
+		end,
+	})
+
+	-- ==================== AUTO BUY ====================
+	BuyerTab:CreateToggle({
+		Name = "Auto Buy",
+		Callback = function(v)
+			autoBuy = v
+
+			if v then
+				task.spawn(function()
+					local c = 0
+
+					while autoBuy and c < buyAmount do
+						if buyHouse() then
+							c += 1
+						end
+
+						task.wait(0.5)
+					end
+
+					autoBuy = false
+				end)
+			end
+		end,
+	})
+
+	-- ==================== TRADING TAB ====================
+	local tradingRunning = false
+	local tradeSelections = {}
+	local lastTradeCount = -1
+
+	tradeDropdown = TradeTab:CreateDropdown({
+		Name = "Select Houses To Trade",
+		Options = ownedHouseList,
+		CurrentOption = {},
+		MultipleOptions = true,
+		Callback = function(opts)
+			table.clear(tradeSelections)
+
+			-- Correct way to loop through Rayfield multiple selections
+			for _, name in ipairs(opts or {}) do
+				local id = ownedHouseMap[name]
+				if id then
+					tradeSelections[id] = name
+				end
+			end
+
+			-- Properly count how many houses are selected
+			local selectedCount = 0
+			for _ in pairs(tradeSelections) do
+				selectedCount = selectedCount + 1
+			end
+
+			-- Notify only when the count actually changes
+			if selectedCount ~= lastTradeCount then
+				lastTradeCount = selectedCount
+				Rayfield:Notify({ Title = "Trading", Content = selectedCount .. " houses selected" }) -- Uses your notify function
+			end
+		end,
+	})
+
+	local function waitUntilHouseGone(id, timeout)
+		timeout = timeout or 300
+		local start = tick()
+		while tick() - start < timeout do
+			local found = false
+			for _, h in pairs(ClientData.get("house_manager") or {}) do
+				if h.house_id == id then
+					found = true
+					break
+				end
+			end
+			if not found then
+				return true
+			end
+			task.wait(1)
+		end
+		return false
+	end
+
+	local function processTrade()
+		if tradingRunning then
+			return
+		end
+		tradingRunning = true
+		Rayfield:Notify({ Title = "Trading", Content = "Started dynamic queue", Duration = 3 })
+
+		task.spawn(function()
+			while tradingRunning do
+				refreshOwnedHouses()
+
+				local currentQueue = {}
+				for id, _ in pairs(tradeSelections) do
+					table.insert(currentQueue, id)
+				end
+
+				if #currentQueue == 0 then
+					Rayfield:Notify({ Title = "Trading", Content = "Queue finished ✅", Duration = 3 })
+					break
+				end
+
+				local id = currentQueue[1]
+				local name = tradeSelections[id]
 
 				Rayfield:Notify({ Title = "Trading", Content = "Processing " .. name })
 
-                pcall(function() Router.get("HousingAPI/SpawnHouse"):FireServer(id) end)
-                task.wait(2)
-                pcall(function() Router.get("HousingAPI/ListHouse"):InvokeServer(id) end)
+				pcall(function()
+					Router.get("HousingAPI/SpawnHouse"):FireServer(id)
+				end)
+				task.wait(2)
+				pcall(function()
+					Router.get("HousingAPI/ListHouse"):InvokeServer(id)
+				end)
 
-                if waitUntilHouseGone(id) then
-                    Rayfield:Notify({ Title = "Trading", Content = name .. " traded ✔", Duration = 3 })
-                    tradeSelections[id] = nil
-                else
-                    Rayfield:Notify({ Title = "Trading", Content = name .. " timeout ❌", Duration = 3 })
-                end
-                task.wait(1)
-            end
-            tradingRunning = false
-        end)
-    end
+				if waitUntilHouseGone(id) then
+					Rayfield:Notify({ Title = "Trading", Content = name .. " traded ✔", Duration = 3 })
+					tradeSelections[id] = nil
+				else
+					Rayfield:Notify({ Title = "Trading", Content = name .. " timeout ❌", Duration = 3 })
+				end
+				task.wait(1)
+			end
+			tradingRunning = false
+		end)
+	end
 
-    TradeTab:CreateButton({ Name = "Start Trading Queue", Callback = processTrade })
+	TradeTab:CreateButton({ Name = "Start Trading Queue", Callback = processTrade })
 
-    TradeTab:CreateButton({
-        Name = "Clear Queue",
-        Callback = function()
-            tradingRunning = false
-            table.clear(tradeSelections)
-            lastTradeCount = 0   -- Reset counter
+	TradeTab:CreateButton({
+		Name = "Clear Queue",
+		Callback = function()
+			tradingRunning = false
+			table.clear(tradeSelections)
+			lastTradeCount = 0 -- Reset counter
 
-            pcall(function()
-                if tradeDropdown then
-                    tradeDropdown:Set({})
-                end
-            end)
+			pcall(function()
+				if tradeDropdown then
+					tradeDropdown:Set({})
+				end
+			end)
 
-            Rayfield:Notify({ Title = "Trading", Content = "Queue cleared & stopped 🛑" })
-        end,
-    })
+			Rayfield:Notify({ Title = "Trading", Content = "Queue cleared & stopped 🛑" })
+		end,
+	})
 
 	local function countfurnitures(t)
 		local c = 0
@@ -2575,7 +2688,7 @@ local function loadMain()
 	})
 	-- ==================== AUTO REFRESH (Critical Fix) ====================
 	task.spawn(function()
-		task.wait(2)  -- Give ClientData time to load
+		task.wait(2) -- Give ClientData time to load
 		refreshOwnedHouses()
 	end)
 
@@ -2588,8 +2701,13 @@ local function loadMain()
 	ClientData.register_callback_plus_existing("house_manager", function()
 		refreshOwnedHouses()
 	end)
+	Rayfield:Notify({
+		Title = "Cubix",
+		Content = "Loaded successfully!",
+		Duration = 5,
+	})	
 end
 
 loadMain()
 
-Rayfield:Notify({ Title = "Cubix", Content = "Loaded successfully! Owned houses should now show immediately.", Duration = 5 })
+
