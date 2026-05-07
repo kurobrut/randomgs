@@ -408,8 +408,7 @@
 		--// TRADE SECTION
 		MainTab:CreateSection("🤝 Auto Accept Trade Requests")
 
-		local autoTradeEnabled = false
-		local Players = game:GetService("Players")
+		local autoTradeEnabled = true
 
 		local TradeRequestEvent = Router.get_event("TradeAPI/TradeRequestReceived")
 
