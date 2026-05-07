@@ -1,0 +1,510 @@
+	local function LoadMain()
+		--// LOAD RAYFIELD
+		local Rayfield =
+			loadstring(game:HttpGet("https://raw.githubusercontent.com/SiriusSoftwareLtd/Rayfield/main/source.lua"))()
+
+		--// SERVICES
+		local HttpService = game:GetService("HttpService")
+		local Players = game:GetService("Players")
+		local TeleportService = game:GetService("TeleportService")
+		local TextChatService = game:GetService("TextChatService")
+		local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+		task.spawn(function()
+			local player = Players.LocalPlayer
+
+			local character = player.Character or player.CharacterAdded:Wait()
+			local hrp = character:WaitForChild("HumanoidRootPart")
+
+			repeat task.wait()
+			until game:IsLoaded()
+
+			task.wait(5)
+
+			hrp.CFrame = CFrame.new(
+				-244.595932,
+				30.894310,
+				-1553.030762,
+				-0.988525,
+				-0.000000,
+				0.151060,
+				-0.000000,
+				1.000000,
+				-0.000000,
+				-0.151060,
+				-0.000000,
+				-0.988525
+			)
+		end)
+
+		--// CONFIG
+		local configFolder = "MagicDoorConfigs"
+		local configFile = configFolder .. "/MagicDoorSettings.json"
+
+		local placeDelay = 1.5
+		local chatDelay = 5
+		local chatMessage = ""
+		local serverHopDelay = 300
+
+		local masterEnabled = false
+		local autoServerHop = true
+
+		--// LOAD CONFIG
+		if not isfolder(configFolder) then
+			makefolder(configFolder)
+		end
+
+		if isfile(configFile) then
+			local ok, data = pcall(function()
+				return HttpService:JSONDecode(readfile(configFile))
+			end)
+
+			if ok and data then
+				if data.PlaceDelay ~= nil then
+					placeDelay = data.PlaceDelay
+				end
+
+				if data.ChatDelay ~= nil then
+					chatDelay = data.ChatDelay
+				end
+
+				if data.ChatMessage ~= nil then
+					chatMessage = data.ChatMessage
+				end
+
+				if data.ServerHopDelay ~= nil then
+					serverHopDelay = data.ServerHopDelay
+				end
+			end
+		end
+
+		--// SAVE CONFIG
+		local function saveConfig()
+			pcall(function()
+				writefile(configFile, HttpService:JSONEncode({
+					PlaceDelay = placeDelay,
+					ChatDelay = chatDelay,
+					ChatMessage = chatMessage,
+					ServerHopDelay = serverHopDelay,
+				}))
+			end)
+		end
+
+		--// WINDOW
+		local Window = Rayfield:CreateWindow({
+			Name = "Magic Door",
+			LoadingTitle = "Magic Door Auto Placer",
+			ConfigurationSaving = {
+				Enabled = false,
+			},
+			KeySystem = false,
+		})
+
+		local MainTab = Window:CreateTab("🪄 Main", 4483362458)
+
+		--// VARIABLES
+		local placing = false
+		local sendingChat = false
+		local farmSession = 0
+
+		--// MODULES
+		local Fsys = require(game.ReplicatedStorage:WaitForChild("Fsys")).load
+		local ClientData = Fsys("ClientData")
+		local ClientToolManager = Fsys("ClientToolManager")
+		local Router = Fsys("RouterClient")
+
+		--// CHAT FUNCTION
+		local function sendMessage(msg)
+			if sendingChat or not msg or msg == "" then
+				return
+			end
+
+			sendingChat = true
+
+			local success, err = pcall(function()
+				if TextChatService.ChatVersion == Enum.ChatVersion.TextChatService then
+					local channels = TextChatService:WaitForChild("TextChannels")
+					local general = channels:FindFirstChild("RBXGeneral")
+
+					if general then
+						general:SendAsync(msg)
+					end
+				else
+					local chatEvents =
+						ReplicatedStorage:FindFirstChild("DefaultChatSystemChatEvents")
+
+					if chatEvents then
+						local remote = chatEvents:FindFirstChild("SayMessageRequest")
+
+						if remote then
+							remote:FireServer(msg, "All")
+						end
+					end
+				end
+			end)
+
+			if not success then
+				warn("[AutoChat] Failed:", err)
+			end
+
+			task.wait(0.5)
+			sendingChat = false
+		end
+
+		--// AUTO EQUIP
+		local function autoEquipMagicDoor()
+			local inventory = ClientData.get("inventory")
+
+			if not inventory then
+				return false
+			end
+
+			for _, items in pairs(inventory) do
+				for _, item in pairs(items) do
+					local itemId = tostring(item.id or ""):lower()
+					local itemKind = tostring(item.kind or ""):lower()
+
+					if itemId:find("magic_house_door")
+						or itemKind:find("magic_house_door") then
+
+						ClientToolManager.backpack_equip(item)
+
+						task.wait(0.25)
+						return true
+					end
+				end
+			end
+
+			return false
+		end
+
+		--// PLACE DOOR
+		local function autoPlaceMagicDoor()
+			local player = Players.LocalPlayer
+			local character = player.Character
+
+			if not character or not character:FindFirstChild("HumanoidRootPart") then
+				return
+			end
+
+			local equipped = autoEquipMagicDoor()
+
+			if not equipped then
+				Rayfield:Notify({
+					Title = "Error",
+					Content = "Magic House Door not found!",
+					Duration = 3,
+				})
+
+				return
+			end
+
+			local root = character.HumanoidRootPart
+
+			local placeCFrame =
+				root.CFrame
+				* CFrame.new(0, -3, -6)
+				* CFrame.Angles(0, math.rad(180), 0)
+
+			local success, result = pcall(function()
+				return Router
+					.get("PlaceableToolAPI/CreatePlaceable")
+					:InvokeServer(placeCFrame)
+			end)
+
+			if not success then
+				Rayfield:Notify({
+					Title = "Error",
+					Content = "Place failed.",
+					Duration = 2,
+				})
+
+				return
+			end
+
+			if result then
+				task.wait(0.6)
+
+				pcall(function()
+					Router
+						.get("PlaceableToolAPI/UseMagicHouseDoor")
+						:FireServer()
+				end)
+			else
+				Rayfield:Notify({
+					Title = "Failed",
+					Content = "Invalid spot or cooldown.",
+					Duration = 2,
+				})
+			end
+		end
+
+		--// SERVER HOP
+		local function serverHop()
+			Rayfield:Notify({
+				Title = "Server Hop",
+				Content = "Finding new server...",
+				Duration = 3,
+			})
+
+			local success, result = pcall(function()
+				local req = game:HttpGet(
+					"https://games.roblox.com/v1/games/"
+						.. game.PlaceId
+						.. "/servers/Public?sortOrder=Asc&limit=100"
+				)
+
+				local servers = HttpService:JSONDecode(req)
+
+				if servers and servers.data then
+					for _, server in ipairs(servers.data) do
+						if server.playing < server.maxPlayers
+							and server.id ~= game.JobId then
+
+							TeleportService:TeleportToPlaceInstance(
+								game.PlaceId,
+								server.id,
+								Players.LocalPlayer
+							)
+
+							break
+						end
+					end
+				end
+			end)
+
+			if not success then
+				warn("[ServerHop] Failed:", result)
+
+				Rayfield:Notify({
+					Title = "Error",
+					Content = "Server hop failed.",
+					Duration = 3,
+				})
+			end
+		end
+
+		--// UI
+		MainTab:CreateSection("🪄 Magic Door")
+
+		MainTab:CreateSlider({
+			Name = "Place Delay",
+			Range = {1, 60},
+			Increment = 1,
+			Suffix = "s",
+			CurrentValue = placeDelay,
+			Callback = function(Value)
+				placeDelay = Value
+				saveConfig()
+			end,
+		})
+
+		MainTab:CreateButton({
+			Name = "Place One Door",
+			Callback = function()
+				autoPlaceMagicDoor()
+			end,
+		})
+
+		MainTab:CreateSection("💬 Auto Chat")
+
+		MainTab:CreateInput({
+			Name = "Message",
+			PlaceholderText = "Type message...",
+			RemoveTextAfterFocusLost = false,
+			CurrentValue = chatMessage,
+			Callback = function(Text)
+				chatMessage = Text
+				saveConfig()
+			end,
+		})
+
+		MainTab:CreateSlider({
+			Name = "Chat Delay",
+			Range = {1, 60},
+			Increment = 1,
+			Suffix = "s",
+			CurrentValue = chatDelay,
+			Callback = function(Value)
+				chatDelay = Value
+				saveConfig()
+			end,
+		})
+
+		MainTab:CreateToggle({
+			Name = "Auto Farm (Door + Chat)",
+			CurrentValue = false,
+			Callback = function(Value)
+				masterEnabled = Value
+
+				if Value then
+					farmSession += 1
+					local mySession = farmSession
+
+					task.spawn(function()
+						while masterEnabled and farmSession == mySession do
+							if not placing then
+								placing = true
+
+								pcall(autoPlaceMagicDoor)
+
+								placing = false
+
+								task.wait(placeDelay)
+							else
+								task.wait(0.1)
+							end
+						end
+					end)
+
+					task.spawn(function()
+						while masterEnabled and farmSession == mySession do
+							if chatMessage ~= "" then
+								sendMessage(chatMessage)
+							end
+
+							task.wait(chatDelay)
+						end
+					end)
+				end
+			end,
+		})
+
+		MainTab:CreateSection("🏠 Trade Functions")
+
+		MainTab:CreateButton({
+			Name = "List House for Trade",
+			
+			Callback = function()
+				local success, houseInterior = pcall(function()
+					return ClientData.get("house_interior")
+				end)
+
+				if not success or not houseInterior then
+					Rayfield:Notify({ Title = "Error", Content = "Be inside your house!", Duration = 3 })
+					return
+				end
+
+				pcall(function()
+					Router.get("HousingAPI/ListHouse"):InvokeServer()
+				end)
+
+				Rayfield:Notify({ Title = "Success", Content = "House listed.", Duration = 2 })
+			end,
+		})
+
+		MainTab:CreateButton({
+			Name = "Unlist House for Trade",
+			Callback = function()
+				pcall(function()
+					Router.get("HousingAPI/UnlistHouse"):InvokeServer()
+				end)
+
+				Rayfield:Notify({ Title = "Success", Content = "House unlisted.", Duration = 2 })
+			end,
+		})
+
+
+		--// TRADE SECTION
+		MainTab:CreateSection("🤝 Auto Accept Trade Requests")
+
+		local autoTradeEnabled = false
+		local Players = game:GetService("Players")
+
+		local TradeRequestEvent = Router.get_event("TradeAPI/TradeRequestReceived")
+
+		--// SAFE PLAYER RESOLVER
+		local function resolvePlayer(obj)
+			if typeof(obj) == "Instance" and obj:IsA("Player") then
+				return obj
+			elseif typeof(obj) == "number" then
+				return Players:GetPlayerByUserId(obj)
+			elseif typeof(obj) == "string" then
+				return Players:FindFirstChild(obj)
+			end
+			return nil
+		end
+
+		--// EVENT LISTENER (FIXED)
+		if TradeRequestEvent then
+			TradeRequestEvent.OnClientEvent:Connect(function(...)
+				if not autoTradeEnabled then return end
+
+				local args = { ... }
+				local player = resolvePlayer(args[1])
+
+				if player then
+					local remote = Router.get("TradeAPI/AcceptOrDeclineTradeRequest")
+					if remote then
+						warn("[AutoTrade] Accepting trade from:", player.Name)
+
+						-- ✅ THIS is the working call
+						pcall(function()
+							remote:InvokeServer(player, true)
+						end)
+					end
+				end
+			end)
+		else
+			warn("[AutoTrade] TradeRequestReceived event not found.")
+		end
+
+		--// TOGGLE
+		MainTab:CreateToggle({
+			Name = "Auto Accept Trades (ALL PLAYERS)",
+			CurrentValue = true,
+			Callback = function(val)
+				autoTradeEnabled = val
+
+				Rayfield:Notify({
+					Title = "Auto Trade",
+					Content = val and "Now accepting ALL trade requests" or "Disabled",
+					Duration = 3,
+				})
+			end,
+		})
+
+		--// SERVER HOP SECTION
+		MainTab:CreateSection("🌍 Server Hop")
+
+		MainTab:CreateSlider({
+			Name = "Hop Delay",
+			Range = {10, 3600},
+			Increment = 10,
+			Suffix = "s",
+			CurrentValue = serverHopDelay,
+			Callback = function(v)
+				serverHopDelay = v
+				saveConfig()
+			end,
+		})
+
+		MainTab:CreateButton({
+			Name = "Hop Server Now",
+			Callback = function()
+				serverHop()
+			end,
+		})
+
+		MainTab:CreateToggle({
+			Name = "Auto Server Hop",
+			CurrentValue = true,
+			Callback = function(v)
+				autoServerHop = v
+
+				if v then
+					task.spawn(function()
+						while autoServerHop do
+							task.wait(serverHopDelay)
+
+							if autoServerHop then
+								serverHop()
+							end
+						end
+					end)
+				end
+			end,
+		})
+	end
+
+	LoadMain()
