@@ -274,7 +274,18 @@ local function loadMain()
 		return true
 	end
 
-	-- ==================== SELL BUTTON ====================
+-- ==================== SELL BUTTON ====================
+	ownedDropdown = BuyerTab:CreateDropdown({
+		Name = "Select Owned House to Sell",
+		Options = ownedHouseList,
+		CurrentOption = {},
+		MultipleOptions = false,
+		Callback = function(opt)
+			local name = (typeof(opt) == "table") and opt[1] or opt
+			selectedHouseId = ownedHouseMap[name] or nil
+		end,
+	})
+
 	BuyerTab:CreateButton({
 		Name = "Sell Selected House",
 		Callback = function()
@@ -2709,5 +2720,3 @@ local function loadMain()
 end
 
 loadMain()
-
-
