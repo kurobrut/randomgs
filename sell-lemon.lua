@@ -17,7 +17,19 @@ local MainTab = Window:CreateTab("Main", 4483362458)
 
 --// Services
 local Players = game:GetService("Players")
+local CollectionService = game:GetService("CollectionService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local LocalPlayer = Players.LocalPlayer
+
+local RemoteRequest
+pcall(function()
+	RemoteRequest = require(ReplicatedStorage.Core.RemoteRequest)
+end)
+
+local RemoteSignal
+pcall(function()
+	RemoteSignal = require(ReplicatedStorage.Core.RemoteSignal)
+end)
 
 --// Find Tycoon
 local userTycoon = (function()
@@ -58,6 +70,8 @@ local function saveConfig()
 		end
 	end)
 end
+
+local VineRequests = {}
 
 --// Anti-AFK (Always Enabled)
 LocalPlayer.Idled:Connect(function()
@@ -174,40 +188,103 @@ task.spawn(function()
 end)
 
 --// Cash Drops
-local CashDrops = {}
-local function addCashDrop(obj)
-	if obj:IsA("BasePart") and obj.Parent and obj.Parent.Name == "CashDrops" and not table.find(CashDrops, obj) then
-		table.insert(CashDrops, obj)
-	end
-end
-local function removeCashDrop(obj)
-	local index = table.find(CashDrops, obj)
-	if index then table.remove(CashDrops, index) end
-end
-for _, v in ipairs(workspace:GetDescendants()) do addCashDrop(v) end
-workspace.DescendantAdded:Connect(addCashDrop)
-workspace.DescendantRemoving:Connect(removeCashDrop)
+local CashDropIds = {}
+local CashDropRedeemRequest
+local CashDropRedeemRemote
+local CashDropNewSignal
+local CashDropStats = {
+	Seen = 0,
+	Redeemed = 0,
+	Failed = 0,
+}
 
-local function collectCashDrop(drop)
-	local hrp = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
-	if not hrp or not drop or not drop.Parent then return end
-	hrp.CFrame = drop.CFrame + Vector3.new(0, 3, 0)
-	pcall(function()
-		firetouchinterest(hrp, drop, 0)
-		firetouchinterest(hrp, drop, 1)
-	end)
+pcall(function()
+	local core = ReplicatedStorage:WaitForChild("Core", 10)
+	local remoteSignals = core and core:WaitForChild("RemoteSignal", 10)
+	local remoteRequests = core and core:WaitForChild("RemoteRequest", 10)
+	CashDropNewSignal = remoteSignals and remoteSignals:WaitForChild("CashDropService.New", 10)
+	CashDropRedeemRemote = remoteRequests and remoteRequests:WaitForChild("CashDropService.Redeem", 10)
+
+	if RemoteRequest then
+		CashDropRedeemRequest = RemoteRequest.new("CashDropService.Redeem")
+	end
+end)
+
+local function redeemCashDrop(dropId)
+	if CashDropRedeemRequest then
+		local ok, amount = pcall(function()
+			return CashDropRedeemRequest:InvokeServer(dropId)
+		end)
+		if ok then
+			return amount ~= false and amount ~= nil
+		end
+	end
+
+	if CashDropRedeemRemote then
+		local ok, amount = pcall(function()
+			if CashDropRedeemRemote:IsA("RemoteFunction") then
+				return CashDropRedeemRemote:InvokeServer(dropId)
+			end
+
+			CashDropRedeemRemote:FireServer(dropId)
+			return true
+		end)
+		if ok then
+			return amount ~= false and amount ~= nil
+		end
+	end
+
+	return false
 end
+
+local function queueCashDrop(dropId, lifetime)
+	if not dropId then
+		return
+	end
+
+	for _, drop in ipairs(CashDropIds) do
+		if drop.Id == dropId then
+			return
+		end
+	end
+
+	CashDropStats.Seen += 1
+
+	if AutoCashDrops and redeemCashDrop(dropId) then
+		CashDropStats.Redeemed += 1
+		return
+	end
+
+	table.insert(CashDropIds, {
+		Id = dropId,
+		Expires = time() + (lifetime or 30),
+	})
+end
+
+pcall(function()
+	if RemoteSignal then
+		local signal = RemoteSignal.new("CashDropService.New")
+		if signal and signal.OnClientEvent then
+			signal.OnClientEvent:Connect(queueCashDrop)
+		end
+	elseif CashDropNewSignal and CashDropNewSignal.OnClientEvent then
+		CashDropNewSignal.OnClientEvent:Connect(queueCashDrop)
+	end
+end)
 
 task.spawn(function()
 	while true do
-		task.wait(0.1)
+		task.wait(0.15)
 		if AutoCashDrops then
-			for i = #CashDrops, 1, -1 do
-				local drop = CashDrops[i]
-				if drop and drop.Parent then
-					pcall(function() collectCashDrop(drop) end)
-				else
-					table.remove(CashDrops, i)
+			for i = #CashDropIds, 1, -1 do
+				local drop = CashDropIds[i]
+				if not drop or drop.Expires < time() or redeemCashDrop(drop.Id) then
+					if drop and drop.Expires >= time() then
+						CashDropStats.Redeemed += 1
+					else
+						CashDropStats.Failed += 1
+					end
+					table.remove(CashDropIds, i)
 				end
 			end
 		end
@@ -295,16 +372,81 @@ task.spawn(function()
 	end
 end)
 
+--// Auto Vine
+local function getCashVines()
+	local vines = {}
+
+	pcall(function()
+		for _, vine in ipairs(CollectionService:GetTagged("CashVine")) do
+			if vine:IsDescendantOf(workspace) and not table.find(vines, vine) then
+				table.insert(vines, vine)
+			end
+		end
+	end)
+
+	for _, obj in ipairs(userTycoon:GetDescendants()) do
+		if obj.Name == "CashVine" and not table.find(vines, obj) then
+			table.insert(vines, obj)
+		end
+	end
+
+	return vines
+end
+
+local function useVine(vine)
+	local used = false
+
+	if RemoteRequest then
+		used = pcall(function()
+			local request = VineRequests[vine]
+			if not request then
+				request = RemoteRequest.new("Use", vine)
+				VineRequests[vine] = request
+			end
+			request:InvokeServer()
+		end)
+	end
+
+	if used then
+		return true
+	end
+
+	local prompt = vine:FindFirstChildWhichIsA("ProximityPrompt", true)
+	if prompt then
+		if not prompt.Enabled then
+			return false
+		end
+
+		used = pcall(function()
+			fireproximityprompt(prompt)
+		end)
+	end
+
+	if used then
+		return true
+	end
+
+	for _, obj in ipairs(vine:GetDescendants()) do
+		if obj.Name == "Use" and (obj:IsA("RemoteFunction") or obj:IsA("RemoteEvent")) then
+			return pcall(function()
+				if obj:IsA("RemoteFunction") then
+					obj:InvokeServer()
+				else
+					obj:FireServer()
+				end
+			end)
+		end
+	end
+
+	return false
+end
+
 task.spawn(function()
 	while true do
 		task.wait(0.8)
 		if AutoVine then
-			for _, obj in ipairs(userTycoon:GetDescendants()) do
-				if obj.Name == "Use" and (obj:IsA("RemoteEvent") or obj:IsA("RemoteFunction")) then
-					pcall(function()
-						if obj:IsA("RemoteFunction") then obj:InvokeServer() else obj:FireServer() end
-					end)
-				end
+			for _, vine in ipairs(getCashVines()) do
+				useVine(vine)
 			end
 		end
 	end
@@ -320,8 +462,12 @@ MainTab:CreateToggle({
 	Callback = function(Value)
 		AutoRebirth = Value
 		LastRebirthTime = tick()
-		Rayfield:Notify({ Title = "Auto Rebirth", Content = Value and
-		("Enabled - Every " .. RebirthInterval .. " minutes") or "Disabled", Duration = 4 })
+		Rayfield:Notify({
+			Title = "Auto Rebirth",
+			Content = Value and
+				("Enabled - Every " .. RebirthInterval .. " minutes") or "Disabled",
+			Duration = 4
+		})
 		saveConfig()
 	end,
 })
@@ -399,7 +545,8 @@ MainTab:CreateToggle({
 	Flag = "AutoVine",
 	Callback = function(Value)
 		AutoVine = Value
-		Rayfield:Notify({ Title = "Auto Vine", Content = Value and "Enabled" or "Disabled" })
+		local content = Value and ("Enabled - Found " .. #getCashVines() .. " vine(s)") or "Disabled"
+		Rayfield:Notify({ Title = "Auto Vine", Content = content })
 		saveConfig()
 	end,
 
