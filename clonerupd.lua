@@ -49,6 +49,7 @@ local function loadMain()
 	local pastehousefast
 	local pastehouseslow
 	local IgnoreTypeCheck
+	local Pastetextures
 
 	local afkEnabled = false
 	plr.Idled:Connect(function()
@@ -371,17 +372,22 @@ local function loadMain()
 	end
 
 	local function loadHouseDataFromPastebin(pasteValue)
-		local input = tostring(pasteValue or ""):gsub("%s+", "")
+		local input = tostring(pasteValue or ""):gsub("^%s+", ""):gsub("%s+$", "")
 		if input == "" then
 			return nil, "Please enter a Pastebin link or ID"
 		end
 
-		local pasteId = input:match("pastebin%.com/(.+)")
-		if pasteId then
-			pasteId = pasteId:gsub("raw/", "")
-			pasteId = pasteId:match("([^/?#]+)") or pasteId
-		else
-			pasteId = input
+		-- Support a paste ID alone, a normal link, and a /raw/ link.
+		local pasteId = input:match("^[Hh][Tt][Tt][Pp][Ss]?://[^/]*pastebin%.com/raw/([^/?#]+)")
+			or input:match("^[Hh][Tt][Tt][Pp][Ss]?://[^/]*pastebin%.com/([^/?#]+)")
+			or input:match("^[Ww][Ww][Ww]%.pastebin%.com/raw/([^/?#]+)")
+			or input:match("^[Ww][Ww][Ww]%.pastebin%.com/([^/?#]+)")
+			or input:match("^[Pp]astebin%.com/raw/([^/?#]+)")
+			or input:match("^[Pp]astebin%.com/([^/?#]+)")
+			or input:match("^([^/?#%s]+)$")
+
+		if not pasteId or not pasteId:match("^[%w_-]+$") then
+			return nil, "Enter a Pastebin ID or Pastebin link"
 		end
 
 		local response
@@ -392,7 +398,7 @@ local function loadMain()
 			})
 		end)
 
-		if not success or not response or not response.Body or response.Body == "" then
+		if not success or not response or response.Success == false or not response.Body or response.Body == "" then
 			return nil, "Failed to fetch Pastebin data"
 		end
 
@@ -1360,7 +1366,7 @@ local function loadMain()
 	)
 	Tab:CreateLabel("Do not Touch", "info")
 
-	local Pastetextures = Tab:CreateToggle({
+	Pastetextures = Tab:CreateToggle({
 		Name = "Paste textures",
 		CurrentValue = true,
 		Flag = "Pastetextures",
