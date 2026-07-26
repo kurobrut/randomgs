@@ -236,6 +236,7 @@ local function loadMain()
 	local fqFileDropdown
 	local fqQueueListLabel
 	local autoPasteFileInfo
+	local autoPasteQueueCostLabel
 	local autoPastePastebinValue = ""
 	local autoPasteQueueCopies = 1
 	local autoPasteSourceDropdown
@@ -434,10 +435,48 @@ local function loadMain()
 		return fallbackId
 	end
 
+	local function getQueueHouseCost(houseData)
+		if type(houseData) ~= "table" then
+			return 0
+		end
+
+		local furnitureCost = 0
+		for _, item in pairs(houseData.furniture or {}) do
+			if furnituresdb[item.id] then
+				furnitureCost += furnituresdb[item.id].cost or 0
+			end
+		end
+
+		local textureCost = 0
+		for _, texture in pairs(houseData.textures or {}) do
+			if texturesdb.walls[texture.walls] then
+				textureCost += texturesdb.walls[texture.walls].cost or 0
+			end
+			if texturesdb.floors[texture.floors] then
+				textureCost += texturesdb.floors[texture.floors].cost or 0
+			end
+		end
+
+		return furnitureCost + textureCost
+	end
+
+	local function getQueueTotalCost()
+		local total = 0
+		for _, entry in ipairs(fileQueue) do
+			total += getQueueHouseCost(entry.houseData)
+		end
+		return total
+	end
+
 	local function setAPFileInfo()
 		if autoPasteFileInfo then
 			pcall(function()
 				autoPasteFileInfo:Set("File Queue: " .. #fileQueue .. " file(s)")
+			end)
+		end
+		if autoPasteQueueCostLabel then
+			pcall(function()
+				autoPasteQueueCostLabel:Set("Queued Total Cost: $" .. getQueueTotalCost())
 			end)
 		end
 	end
@@ -460,7 +499,8 @@ local function loadMain()
 
 		local lines = {}
 		for i, entry in ipairs(fileQueue) do
-			table.insert(lines, i .. ". " .. entry.filename .. " [" .. getFileHouseType(entry.houseData) .. "]")
+			local cost = getQueueHouseCost(entry.houseData)
+			table.insert(lines, i .. ". " .. entry.filename .. " [" .. getFileHouseType(entry.houseData) .. "] ($" .. cost .. ")")
 		end
 		pcall(function() fqQueueListLabel:Set("Queue:\n" .. table.concat(lines, "\n")) end)
 	end
@@ -582,7 +622,11 @@ local function loadMain()
 						Duration = 2,
 					})
 				else
-					Rayfield:Notify({ Title = "File Queue", Content = tostring(err), Duration = 4 })
+					Rayfield:Notify({
+						Title = "File Queue",
+						Content = "Failed to load " .. filename .. ": " .. tostring(err),
+						Duration = 4,
+					})
 				end
 			end
 
@@ -729,6 +773,7 @@ local function loadMain()
 	local autoPasteStatus = AutoPasteTab:CreateLabel("Status: Idle", "activity")
 	local autoPasteProgress = AutoPasteTab:CreateLabel("Progress: -", "trending-up")
 	autoPasteFileInfo = AutoPasteTab:CreateLabel("File Queue: 0 file(s)", "list")
+	autoPasteQueueCostLabel = AutoPasteTab:CreateLabel("Queued Total Cost: $0", "list")
 
 	local function setAPStatus(s) pcall(function() autoPasteStatus:Set("Status: " .. s) end) end
 	local function setAPProg(s)   pcall(function() autoPasteProgress:Set("Progress: " .. s) end) end
