@@ -835,6 +835,26 @@ local function loadMain()
 		end)
 	end
 
+	local function deselectAutoPasteTarget(houseId)
+		if not houseId then
+			return
+		end
+
+		if autoPasteSelections then
+			autoPasteSelections[houseId] = nil
+		end
+
+		if autoPasteDropdown then
+			local selectedNames = {}
+			for id, name in pairs(autoPasteSelections or {}) do
+				table.insert(selectedNames, name)
+			end
+			pcall(function()
+				autoPasteDropdown:Set(selectedNames)
+			end)
+		end
+	end
+
 	local function clearCurrentHouseFurniture()
 		local ok, interior = pcall(function() return cd.get("house_interior") end)
 		if ok and interior and interior.furniture then
@@ -935,6 +955,7 @@ local function loadMain()
 
 		exitCurrentHouse()
 		task.wait(3)
+		deselectAutoPasteTarget(houseId)
 		return true
 	end
 
