@@ -1332,32 +1332,102 @@ local function loadMain()
 	local function processTrade()
 		if tradingRunning then return end
 		tradingRunning = true
-		Rayfield:Notify({ Title = "Trading", Content = "Started dynamic queue", Duration = 3 })
+
+		Rayfield:Notify({
+			Title = "Trading",
+			Content = "Started dynamic queue",
+			Duration = 3
+		})
+
 		task.spawn(function()
 			while tradingRunning do
 				refreshOwnedHouses()
+
 				local currentQueue = {}
+
 				for id, _ in pairs(tradeSelections) do
 					table.insert(currentQueue, id)
 				end
+
 				if #currentQueue == 0 then
-					Rayfield:Notify({ Title = "Trading", Content = "Queue finished ✅", Duration = 3 })
+					Rayfield:Notify({
+						Title = "Trading",
+						Content = "Queue finished ✅",
+						Duration = 3
+					})
 					break
 				end
+
 				local id = currentQueue[1]
 				local name = tradeSelections[id]
-				Rayfield:Notify({ Title = "Trading", Content = "Processing " .. name })
-				pcall(function() Router.get("HousingAPI/SpawnHouse"):FireServer(id) end)
-				task.wait(2)
-				pcall(function() Router.get("HousingAPI/ListHouse"):InvokeServer(id) end)
+
+				Rayfield:Notify({
+					Title = "Trading",
+					Content = "Spawning " .. name,
+					Duration = 3
+				})
+
+				-- 1. Spawn the house first
+				local spawnSuccess = pcall(function()
+					Router.get("HousingAPI/SpawnHouse"):FireServer(id)
+				end)
+
+				if not spawnSuccess then
+					Rayfield:Notify({
+						Title = "Trading",
+						Content = "Failed to spawn " .. name .. " ❌",
+						Duration = 3
+					})
+
+					task.wait(2)
+					continue
+				end
+
+				-- 2. Give the server/client time to finish spawning it
+				task.wait(5)
+
+				Rayfield:Notify({
+					Title = "Trading",
+					Content = "Listing " .. name,
+					Duration = 3
+				})
+
+				-- 3. List the house AFTER the delay
+				local listSuccess = pcall(function()
+					Router.get("HousingAPI/ListHouse"):InvokeServer(id)
+				end)
+
+				if not listSuccess then
+					Rayfield:Notify({
+						Title = "Trading",
+						Content = "Failed to list " .. name .. " ❌",
+						Duration = 3
+					})
+
+					task.wait(2)
+					continue
+				end
+
+				-- 4. Wait for the house to disappear / trade
 				if waitUntilHouseGone(id) then
-					Rayfield:Notify({ Title = "Trading", Content = name .. " traded ✔", Duration = 3 })
+					Rayfield:Notify({
+						Title = "Trading",
+						Content = name .. " traded ✔",
+						Duration = 3
+					})
+
 					tradeSelections[id] = nil
 				else
-					Rayfield:Notify({ Title = "Trading", Content = name .. " timeout ❌", Duration = 3 })
+					Rayfield:Notify({
+						Title = "Trading",
+						Content = name .. " timeout ❌",
+						Duration = 3
+					})
 				end
+
 				task.wait(1)
 			end
+
 			tradingRunning = false
 		end)
 	end
@@ -2193,14 +2263,6 @@ local function loadMain()
 		end,
 	})
 
-	Tab:CreateButton({
-		Name = "Refresh Players",
-		Callback = function()
-			refreshPlayers()
-			Rayfield:Notify({ Title = "Players Refreshed", Content = "List updated", Duration = 3 })
-		end,
-	})
-
 	TradeRequestEvent.OnClientEvent:Connect(function(...)
 		if not autoTradeEnabled then return end
 		if not selectedPlayer then return end
@@ -2221,7 +2283,7 @@ local function loadMain()
 			task.wait(0.5)
 			if autoTradeEnabled and selectedPlayer then
 				pcall(function() router.get("TradeAPI/AcceptNegotiation"):FireServer() end)
-				task.wait(0.5)
+				task.wait(3.5)
 				pcall(function() router.get("TradeAPI/ConfirmTrade"):FireServer() end)
 			end
 		end
