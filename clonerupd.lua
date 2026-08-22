@@ -2283,7 +2283,7 @@ local function loadMain()
 			task.wait(0.5)
 			if autoTradeEnabled and selectedPlayer then
 				pcall(function() router.get("TradeAPI/AcceptNegotiation"):FireServer() end)
-				task.wait(3.5)
+				task.wait(2)
 				pcall(function() router.get("TradeAPI/ConfirmTrade"):FireServer() end)
 			end
 		end
