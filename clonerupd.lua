@@ -35,6 +35,10 @@ local function loadMain()
 		LoadingTitle = "Cubix",
 		LoadingSubtitle = "House Cloner",
 		Theme = "Amethyst",
+		ConfigurationSaving = {
+			Enabled = true,
+			FileName = "CubixAutoPaste",
+		},
 		Discord = {
 			Enabled = true,
 			Invite = "https://discord.gg/VVsxaBNakm",
@@ -240,6 +244,9 @@ local function loadMain()
 	local autoPastePastebinValue = ""
 	local autoPasteQueueCopies = 1
 	local autoPasteSourceDropdown
+	local autoPasteConfigPath = "HouseFS/auto_paste_config.json"
+	local autoPasteConfigReady = false
+	local autoPasteSavePending = false
 
 	local function deserializeFileValue(value)
 		if type(value) ~= "table" then return value end
@@ -505,12 +512,153 @@ local function loadMain()
 		pcall(function() fqQueueListLabel:Set("Queue:\n" .. table.concat(lines, "\n")) end)
 	end
 
+	local function getAutoPasteTargetNames()
+		local selectedNames = {}
+		for houseId, _ in pairs(autoPasteSelections) do
+			for name, id in pairs(ownedHouseMap) do
+				if id == houseId then
+					table.insert(selectedNames, name)
+					break
+				end
+			end
+		end
+		table.sort(selectedNames)
+		return selectedNames
+	end
+
+	-- Queue entries contain Roblox values (such as CFrame and Color3) that JSON
+	-- cannot store directly. Keep this format compatible with HouseFS files.
+	local function serializeAutoPasteValue(value)
+		local valueType = typeof(value)
+		if valueType == "CFrame" then
+			return { value:GetComponents() }
+		elseif valueType == "Color3" then
+			return { value.R, value.G, value.B }
+		elseif valueType == "Vector3" then
+			return { __type = "Vector3", x = value.X, y = value.Y, z = value.Z }
+		elseif valueType == "Instance" then
+			return nil
+		elseif valueType == "table" then
+			local copy = {}
+			for key, item in pairs(value) do
+				local serialized = serializeAutoPasteValue(item)
+				if serialized ~= nil then copy[key] = serialized end
+			end
+			return copy
+		end
+		return value
+	end
+
+	local function saveAutoPasteConfig()
+		if not isfolder("HouseFS") then makefolder("HouseFS") end
+
+		local targetIds = {}
+		for houseId, _ in pairs(autoPasteSelections) do
+			table.insert(targetIds, tostring(houseId))
+		end
+
+		local config = {
+			version = 1,
+			source = autoPasteSource,
+			singleFileMode = autoPasteSingleFile,
+			pasteMode = autoPasteMode,
+			queueCopies = autoPasteQueueCopies,
+			pastebinValue = autoPastePastebinValue,
+			targetHouseIds = targetIds,
+			queue = serializeAutoPasteValue(fileQueue),
+		}
+
+		local ok, encoded = pcall(function() return HttpService:JSONEncode(config) end)
+		if not ok then return false, "Could not encode queue config: " .. tostring(encoded) end
+
+		local wrote, err = pcall(function() writefile(autoPasteConfigPath, encoded) end)
+		if not wrote then return false, "Could not save config: " .. tostring(err) end
+		return true, #fileQueue, #targetIds
+	end
+
+	local function loadAutoPasteConfig()
+		if not isfile(autoPasteConfigPath) then
+			return false, "No saved Auto Paste config found"
+		end
+
+		local readOk, content = pcall(function() return readfile(autoPasteConfigPath) end)
+		if not readOk then return false, "Could not read config: " .. tostring(content) end
+		local decodeOk, config = pcall(function() return HttpService:JSONDecode(content) end)
+		if not decodeOk or type(config) ~= "table" then return false, "Saved config is invalid" end
+
+		table.clear(fileQueue)
+		for _, entry in ipairs(config.queue or {}) do
+			if type(entry) == "table" and type(entry.houseData) == "table" then
+				table.insert(fileQueue, {
+					filename = tostring(entry.filename or entry.sourceName or "Queued House"),
+					sourceName = tostring(entry.sourceName or entry.filename or "Queued House"),
+					houseData = deserializeFileValue(entry.houseData),
+				})
+			end
+		end
+
+		autoPasteSource = config.source == "filequeue" and "filequeue" or "loaded"
+		autoPasteSingleFile = config.singleFileMode == true
+		autoPasteMode = config.pasteMode == "slow" and "slow" or "fast"
+		autoPasteQueueCopies = math.clamp(math.floor(tonumber(config.queueCopies) or 1), 1, 50)
+		autoPastePastebinValue = tostring(config.pastebinValue or "")
+
+		table.clear(autoPasteSelections)
+		local missingTargets = 0
+		for _, savedId in ipairs(config.targetHouseIds or {}) do
+			local wantedId = tostring(savedId)
+			local foundName, foundId
+			for name, houseId in pairs(ownedHouseMap) do
+				if tostring(houseId) == wantedId then
+					foundName, foundId = name, houseId
+					break
+				end
+			end
+			if foundId then
+				autoPasteSelections[foundId] = foundName
+			else
+				missingTargets += 1
+			end
+		end
+
+		setAutoPasteSource(autoPasteSource)
+		if autoPasteDropdown then pcall(function() autoPasteDropdown:Set(getAutoPasteTargetNames()) end) end
+		rebuildQueueLabel()
+		setAPFileInfo()
+		return true, #fileQueue, missingTargets
+	end
+
+	local function autoSaveAutoPasteConfig()
+		if not autoPasteConfigReady or autoPasteRunning or autoPasteSavePending then return end
+
+		-- Saving a full queued house can be expensive. Defer and combine quick
+		-- changes so adding files to the queue never waits on JSON serialization.
+		autoPasteSavePending = true
+		task.delay(0.75, function()
+			autoPasteSavePending = false
+			if autoPasteConfigReady and not autoPasteRunning then
+				pcall(saveAutoPasteConfig)
+			end
+		end)
+	end
+
 	local function refreshFQFileList()
 		table.clear(fqAllFiles)
-		if not isfolder("HouseFS") then makefolder("HouseFS") end
-		for _, filePath in ipairs(listfiles("HouseFS")) do
+		local folderOk, folderExists = pcall(isfolder, "HouseFS")
+		if not folderOk or not folderExists then
+			pcall(makefolder, "HouseFS")
+		end
+
+		local listed, files = pcall(listfiles, "HouseFS")
+		if not listed or type(files) ~= "table" then
+			files = {}
+		end
+
+		for _, filePath in ipairs(files) do
 			local fileName = filePath:match("^.+/(.+)$") or filePath
-			if fileName:sub(-5) == ".json" or fileName:sub(-4) == ".txt" or fileName:sub(-4) == ".lua" then
+			if fileName ~= "auto_paste_config.json"
+				and (fileName:sub(-5) == ".json" or fileName:sub(-4) == ".txt" or fileName:sub(-4) == ".lua")
+			then
 				table.insert(fqAllFiles, fileName)
 			end
 		end
@@ -528,6 +676,7 @@ local function loadMain()
 		end
 	end
 
+	refreshOwnedHouses()
 	AutoPasteTab:CreateLabel("Use the current loaded house, or queue files from the same HouseFS folder used by Create File.", "info")
 
 	AutoPasteTab:CreateSection("Source")
@@ -536,17 +685,21 @@ local function loadMain()
 		Options = { "Loaded House", "File Queue" },
 		CurrentOption = { "Loaded House" },
 		MultipleOptions = false,
+		Flag = "AutoPasteSource",
 		Callback = function(opt)
 			local v = (typeof(opt) == "table") and opt[1] or opt
 			setAutoPasteSource(v == "File Queue" and "filequeue" or "loaded")
+			autoSaveAutoPasteConfig()
 		end,
 	})
 
 	AutoPasteTab:CreateToggle({
 		Name = "Single File Mode",
 		CurrentValue = false,
+		Flag = "AutoPasteSingleFileMode",
 		Callback = function(v)
 			autoPasteSingleFile = v
+			autoSaveAutoPasteConfig()
 		end,
 	})
 
@@ -555,6 +708,7 @@ local function loadMain()
 		Name = "Copies To Queue",
 		PlaceholderText = "1",
 		RemoveTextAfterFocusLost = false,
+		Flag = "AutoPasteQueueCopies",
 		Callback = function(value)
 			local n = tonumber(value)
 			if n and n > 0 then
@@ -564,6 +718,7 @@ local function loadMain()
 					Content = "Copies set to " .. autoPasteQueueCopies,
 					Duration = 2,
 				})
+				autoSaveAutoPasteConfig()
 			end
 		end,
 	})
@@ -632,6 +787,7 @@ local function loadMain()
 
 			rebuildQueueLabel()
 			setAPFileInfo()
+			autoSaveAutoPasteConfig()
 			if added > 0 then
 				Rayfield:Notify({ Title = "File Queue", Content = added .. " file(s) added", Duration = 3 })
 			end
@@ -644,8 +800,10 @@ local function loadMain()
 		Name = "Pastebin Link / ID",
 		PlaceholderText = "https://pastebin.com/xxxxxx or xxxxxx",
 		RemoveTextAfterFocusLost = false,
+		Flag = "AutoPastePastebin",
 		Callback = function(value)
 			autoPastePastebinValue = tostring(value or "")
+			autoSaveAutoPasteConfig()
 		end,
 	})
 
@@ -677,6 +835,7 @@ local function loadMain()
 			end
 			rebuildQueueLabel()
 			setAPFileInfo()
+			autoSaveAutoPasteConfig()
 
 			Rayfield:Notify({
 				Title = "Pastebin Queue",
@@ -695,6 +854,7 @@ local function loadMain()
 			local removed = table.remove(fileQueue, 1)
 			rebuildQueueLabel()
 			setAPFileInfo()
+			autoSaveAutoPasteConfig()
 			Rayfield:Notify({ Title = "File Queue", Content = "Removed " .. removed.filename, Duration = 2 })
 		end,
 	})
@@ -707,6 +867,7 @@ local function loadMain()
 			table.clear(fileQueue)
 			rebuildQueueLabel()
 			setAPFileInfo()
+			autoSaveAutoPasteConfig()
 			if autoPasteStatus then
 				pcall(function() autoPasteStatus:Set("Status: Idle") end)
 			end
@@ -721,9 +882,10 @@ local function loadMain()
 
 	autoPasteDropdown = AutoPasteTab:CreateDropdown({
 		Name = "Select Houses to Paste Into",
-		Options = {},
+		Options = ownedHouseList,
 		CurrentOption = {},
 		MultipleOptions = true,
+		Flag = "AutoPasteTargetHouses",
 		Callback = function(opts)
 			table.clear(autoPasteSelections)
 			for _, name in ipairs(opts or {}) do
@@ -734,11 +896,14 @@ local function loadMain()
 			end
 			local count = 0
 			for _ in pairs(autoPasteSelections) do count += 1 end
-			Rayfield:Notify({
-				Title = "Auto Paste",
-				Content = count .. " house(s) selected",
-				Duration = 2,
-			})
+			autoSaveAutoPasteConfig()
+			if autoPasteConfigReady then
+				Rayfield:Notify({
+					Title = "Auto Paste",
+					Content = count .. " house(s) selected",
+					Duration = 2,
+				})
+			end
 		end,
 	})
 
@@ -747,6 +912,7 @@ local function loadMain()
 		Callback = function()
 			refreshOwnedHouses()
 			table.clear(autoPasteSelections)
+			autoSaveAutoPasteConfig()
 			Rayfield:Notify({
 				Title = "Auto Paste",
 				Content = "House list refreshed (" .. #ownedHouseList .. " houses)\nPlease re-select your targets.",
@@ -762,9 +928,11 @@ local function loadMain()
 		Options = { "Fast", "Slow" },
 		CurrentOption = { "Fast" },
 		MultipleOptions = false,
+		Flag = "AutoPasteMode",
 		Callback = function(opt)
 			local v = (typeof(opt) == "table") and opt[1] or opt
 			autoPasteMode = v == "Slow" and "slow" or "fast"
+			autoSaveAutoPasteConfig()
 		end,
 	})
 
@@ -1032,6 +1200,7 @@ local function loadMain()
 						if fileEntry then
 							local fileType = getFileHouseType(fileEntry.houseData)
 							local matchingHouses = {}
+							local completed = true
 
 							for _, houseId in ipairs(candidateIds) do
 								local ownedType = ownedHouseTypeMap[houseId]
@@ -1052,19 +1221,30 @@ local function loadMain()
 								})
 							else
 								for i, houseId in ipairs(matchingHouses) do
-									if stopFlag or not autoPasteRunning then break end
+									if stopFlag or not autoPasteRunning then
+										completed = false
+										break
+									end
 									local houseName = autoPasteSelections[houseId] or tostring(houseId)
 									setAPProg(i .. "/" .. #matchingHouses .. " - " .. fileEntry.filename .. " -> " .. houseName)
-									if pasteIntoHouse(houseId, houseName, fileEntry.houseData, autoPasteMode, fileType) == true then
+									local pasteResult = pasteIntoHouse(houseId, houseName, fileEntry.houseData, autoPasteMode, fileType)
+									if pasteResult == true then
 										Rayfield:Notify({ Title = "Auto Paste", Content = houseName .. " done", Duration = 2 })
+									elseif stopFlag or not autoPasteRunning then
+										completed = false
+										break
 									end
 									task.wait(1)
 								end
 							end
 
-							table.remove(fileQueue, 1)
-							rebuildQueueLabel()
-							setAPFileInfo()
+							-- Keep the entry if the run was stopped or no target matched;
+							-- it can be continued after selecting compatible houses.
+							if completed and #matchingHouses > 0 then
+								table.remove(fileQueue, 1)
+								rebuildQueueLabel()
+								setAPFileInfo()
+							end
 						end
 					else
 						local totalFiles = #fileQueue
@@ -1116,6 +1296,7 @@ local function loadMain()
 				end
 
 				autoPasteRunning = false
+				autoSaveAutoPasteConfig()
 				setAPStatus("Idle")
 				setAPProg("-")
 				Rayfield:Notify({ Title = "Auto Paste", Content = "Auto paste finished", Duration = 5 })
@@ -1126,9 +1307,10 @@ local function loadMain()
 	AutoPasteTab:CreateButton({
 		Name = "Stop",
 		Callback = function()
-			autoPasteRunning = false
-			stopFlag = true
-			setAPStatus("Stopped")
+				autoPasteRunning = false
+				stopFlag = true
+				autoSaveAutoPasteConfig()
+				setAPStatus("Stopped")
 			setAPProg("-")
 			Rayfield:Notify({ Title = "Auto Paste", Content = "Stopped", Duration = 3 })
 		end,
@@ -1384,7 +1566,7 @@ local function loadMain()
 				end
 
 				-- 2. Give the server/client time to finish spawning it
-				task.wait(2)
+				task.wait(5)
 
 				Rayfield:Notify({
 					Title = "Trading",
@@ -2283,7 +2465,7 @@ local function loadMain()
 			task.wait(0.5)
 			if autoTradeEnabled and selectedPlayer then
 				pcall(function() router.get("TradeAPI/AcceptNegotiation"):FireServer() end)
-				task.wait(2)
+				task.wait(3.5)
 				pcall(function() router.get("TradeAPI/ConfirmTrade"):FireServer() end)
 			end
 		end
@@ -2632,7 +2814,15 @@ local function loadMain()
 	end
 
 	local function refreshFileDropdown()
-		local files = listfiles("HouseFS")
+		local folderOk, folderExists = pcall(isfolder, "HouseFS")
+		if not folderOk or not folderExists then
+			pcall(makefolder, "HouseFS")
+		end
+
+		local listed, files = pcall(listfiles, "HouseFS")
+		if not listed or type(files) ~= "table" then
+			files = {}
+		end
 		local validFiles = {}
 		for _, filePath in ipairs(files) do
 			local fileName = filePath:match("^.+/(.+)$") or filePath
@@ -2648,15 +2838,21 @@ local function loadMain()
 				table.insert(filtered, name)
 			end
 		end
+		if not fileDropdown then
+			refreshFQFileList()
+			return
+		end
+
 		local currentlySelected = fileDropdown.CurrentOption
 		if type(currentlySelected) == "table" then currentlySelected = currentlySelected[1] end
-		fileDropdown:Refresh(filtered)
+		pcall(function() fileDropdown:Refresh(filtered) end)
 		if currentlySelected and table.find(filtered, currentlySelected) then
-			fileDropdown:Set(currentlySelected)
+			pcall(function() fileDropdown:Set(currentlySelected) end)
 		elseif #filtered > 0 then
-			fileDropdown:Set(filtered[1])
+			pcall(function() fileDropdown:Set(filtered[1]) end)
 		else
-			fileDropdown:Set(nil)
+			-- Rayfield cannot safely Set(nil) on an empty dropdown.
+			pcall(function() fileDropdown:Set({}) end)
 		end
 		refreshFQFileList()
 	end
@@ -2915,6 +3111,21 @@ local function loadMain()
 		refreshOwnedHouses()
 	end)
 
+	-- Rayfield shows a "configuration loaded" toast by default. Load the
+	-- configuration normally, but hide only that library status notification.
+	local originalRayfieldNotify = Rayfield.Notify
+	Rayfield.Notify = function(self, notification)
+		if notification and notification.Title == "Rayfield Configurations" then
+			return
+		end
+		return originalRayfieldNotify(self, notification)
+	end
+	Rayfield:LoadConfiguration()
+	Rayfield.Notify = originalRayfieldNotify
+	refreshOwnedHouses()
+	pcall(loadAutoPasteConfig)
+	autoPasteConfigReady = true
+	autoSaveAutoPasteConfig()
 	Rayfield:Notify({ Title = "Cubix", Content = "Loaded successfully!", Duration = 5 })
 end
 
