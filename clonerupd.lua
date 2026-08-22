@@ -1384,7 +1384,7 @@ local function loadMain()
 				end
 
 				-- 2. Give the server/client time to finish spawning it
-				task.wait(5)
+				task.wait(2)
 
 				Rayfield:Notify({
 					Title = "Trading",
