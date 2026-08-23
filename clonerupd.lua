@@ -248,15 +248,22 @@ local function loadMain()
 	local autoPasteSavePending = false
 
 
-	local autoPasteConfigPath = "HouseFS/settings/autopaste.json"
+	local houseFSPath = "HouseFS"
+	local houseSettingsPath = houseFSPath .. "/settings"
+	local houseFilesPath = houseFSPath .. "/Houses"
+	local autoPasteConfigPath = houseSettingsPath .. "/autopaste.json"
 
 	pcall(function()
-		if not isfolder("HouseFS") then
-			makefolder("HouseFS")
+		if not isfolder(houseFSPath) then
+			makefolder(houseFSPath)
 		end
 
-		if not isfolder("HouseFS/settings") then
-			makefolder("HouseFS/settings")
+		if not isfolder(houseSettingsPath) then
+			makefolder(houseSettingsPath)
+		end
+
+		if not isfolder(houseFilesPath) then
+			makefolder(houseFilesPath)
 		end
 	end)
 
@@ -360,7 +367,7 @@ local function loadMain()
 	end
 
 	local function loadHouseDataFromFile(filename)
-		local filePath = "HouseFS/" .. filename
+		local filePath = houseFilesPath .. "/" .. filename
 		local success, content = pcall(readfile, filePath)
 		if not success or not content then
 			return nil, "Failed to read file"
@@ -563,7 +570,7 @@ local function loadMain()
 	end
 
 	local function saveAutoPasteConfig()
-		if not isfolder("HouseFS") then makefolder("HouseFS") end
+		if not isfolder(houseSettingsPath) then makefolder(houseSettingsPath) end
 
 		local targetIds = {}
 		for houseId, _ in pairs(autoPasteSelections) do
@@ -657,12 +664,12 @@ local function loadMain()
 
 	local function refreshFQFileList()
 		table.clear(fqAllFiles)
-		local folderOk, folderExists = pcall(isfolder, "HouseFS")
+		local folderOk, folderExists = pcall(isfolder, houseFilesPath)
 		if not folderOk or not folderExists then
-			pcall(makefolder, "HouseFS")
+			pcall(makefolder, houseFilesPath)
 		end
 
-		local listed, files = pcall(listfiles, "HouseFS")
+		local listed, files = pcall(listfiles, houseFilesPath)
 		if not listed or type(files) ~= "table" then
 			files = {}
 		end
@@ -690,7 +697,7 @@ local function loadMain()
 	end
 
 	refreshOwnedHouses()
-	AutoPasteTab:CreateLabel("Use the current loaded house, or queue files from the same HouseFS folder used by Create File.", "info")
+	AutoPasteTab:CreateLabel("Use the current loaded house, or queue files from HouseFS/Houses.", "info")
 
 	AutoPasteTab:CreateSection("Source")
 	autoPasteSourceDropdown = AutoPasteTab:CreateDropdown({
@@ -721,7 +728,6 @@ local function loadMain()
 		Name = "Copies To Queue",
 		PlaceholderText = "1",
 		RemoveTextAfterFocusLost = false,
-		Flag = "AutoPasteQueueCopies",
 		Callback = function(value)
 			local n = tonumber(value)
 			if n and n > 0 then
@@ -813,7 +819,6 @@ local function loadMain()
 		Name = "Pastebin Link / ID",
 		PlaceholderText = "https://pastebin.com/xxxxxx or xxxxxx",
 		RemoveTextAfterFocusLost = false,
-		Flag = "AutoPastePastebin",
 		Callback = function(value)
 			autoPastePastebinValue = tostring(value or "")
 			autoSaveAutoPasteConfig()
@@ -2795,7 +2800,7 @@ local function loadMain()
 	-- ==================== CREATE FILE TAB ====================
 	local CreateFileTab = Window:CreateTab("Create File", "folder")
 
-	if not isfolder("HouseFS") then makefolder("HouseFS") end
+	if not isfolder(houseFilesPath) then makefolder(houseFilesPath) end
 
 	CreateFileTab:CreateSection("Saved Houses")
 
@@ -2827,12 +2832,12 @@ local function loadMain()
 	end
 
 	local function refreshFileDropdown()
-		local folderOk, folderExists = pcall(isfolder, "HouseFS")
+		local folderOk, folderExists = pcall(isfolder, houseFilesPath)
 		if not folderOk or not folderExists then
-			pcall(makefolder, "HouseFS")
+			pcall(makefolder, houseFilesPath)
 		end
 
-		local listed, files = pcall(listfiles, "HouseFS")
+		local listed, files = pcall(listfiles, houseFilesPath)
 		if not listed or type(files) ~= "table" then
 			files = {}
 		end
@@ -2930,7 +2935,7 @@ local function loadMain()
 			if not success then
 				return Rayfield:Notify({ Title = "Error", Content = "Failed to encode house data", Duration = 3, Image = "circle-alert" })
 			end
-			writefile("HouseFS/" .. filename .. ".json", encoded)
+			writefile(houseFilesPath .. "/" .. filename .. ".json", encoded)
 			refreshFileDropdown()
 			Rayfield:Notify({ Title = "Success", Content = "House saved: " .. filename .. ".json", Duration = 3, Image = "circle-check" })
 		end,
@@ -3031,7 +3036,7 @@ local function loadMain()
 				return Rayfield:Notify({ Title = "Error", Content = "No house selected to delete.", Duration = 3 })
 			end
 			if pendingDelete == selected then
-				local filePath = "HouseFS/" .. selected
+				local filePath = houseFilesPath .. "/" .. selected
 				if isfile(filePath) then
 					delfile(filePath)
 					Rayfield:Notify({ Title = "Deleted", Content = selected .. " has been deleted.", Duration = 3, Image = "circle-check" })
