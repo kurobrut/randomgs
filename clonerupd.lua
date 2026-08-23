@@ -244,9 +244,22 @@ local function loadMain()
 	local autoPastePastebinValue = ""
 	local autoPasteQueueCopies = 1
 	local autoPasteSourceDropdown
-	local autoPasteConfigPath = "HouseFS/auto_paste_config.json"
 	local autoPasteConfigReady = false
 	local autoPasteSavePending = false
+
+
+	local autoPasteConfigPath = "HouseFS/settings/autopaste.json"
+
+	pcall(function()
+		if not isfolder("HouseFS") then
+			makefolder("HouseFS")
+		end
+
+		if not isfolder("HouseFS/settings") then
+			makefolder("HouseFS/settings")
+		end
+	end)
+
 
 	local function deserializeFileValue(value)
 		if type(value) ~= "table" then return value end
@@ -347,7 +360,7 @@ local function loadMain()
 	end
 
 	local function loadHouseDataFromFile(filename)
-		local filePath = "HouseFS/" .. filename
+		local filePath = "HouseFS" .. filename
 		local success, content = pcall(readfile, filePath)
 		if not success or not content then
 			return nil, "Failed to read file"
