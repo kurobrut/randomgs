@@ -360,7 +360,7 @@ local function loadMain()
 	end
 
 	local function loadHouseDataFromFile(filename)
-		local filePath = "HouseFS" .. filename
+		local filePath = "HouseFS/" .. filename
 		local success, content = pcall(readfile, filePath)
 		if not success or not content then
 			return nil, "Failed to read file"
