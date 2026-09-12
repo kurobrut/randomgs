@@ -81,12 +81,92 @@ local function loadMain()
 	local ambiance_label = Manager:CreateLabel("House Ambiance: No", "sun")
 	local type_label = Manager:CreateLabel("House Type: -", "home")
 
+	local scanInfoGui
+	local scanInfoFrame
+	local scanInfoLabels = {}
+	local scanInfoVisible = false
+	local scanInfoValues = { 0, 0, 0, 0, "No", "-" }
+
+	local function getScanInfoParent()
+		local success, hui = pcall(function()
+			return gethui and gethui()
+		end)
+		if success and hui then return hui end
+		return game:GetService("CoreGui")
+	end
+
+	local function createScanInfoGui()
+		if scanInfoGui then return end
+
+		scanInfoGui = Instance.new("ScreenGui")
+		scanInfoGui.Name = "CubixScanInformation"
+		scanInfoGui.ResetOnSpawn = false
+		scanInfoGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+		scanInfoGui.Enabled = scanInfoVisible
+		scanInfoGui.Parent = getScanInfoParent()
+
+		scanInfoFrame = Instance.new("Frame")
+		scanInfoFrame.Name = "ScanInformation"
+		scanInfoFrame.Position = UDim2.new(0, 20, 0, 100)
+		scanInfoFrame.Size = UDim2.new(0, 260, 0, 150)
+		scanInfoFrame.BackgroundColor3 = Color3.fromRGB(28, 28, 38)
+		scanInfoFrame.BackgroundTransparency = 0.1
+		scanInfoFrame.BorderSizePixel = 0
+		scanInfoFrame.Parent = scanInfoGui
+
+		local corner = Instance.new("UICorner")
+		corner.CornerRadius = UDim.new(0, 8)
+		corner.Parent = scanInfoFrame
+
+		local title = Instance.new("TextLabel")
+		title.Name = "Title"
+		title.Size = UDim2.new(1, -20, 0, 28)
+		title.Position = UDim2.new(0, 10, 0, 8)
+		title.BackgroundTransparency = 1
+		title.Font = Enum.Font.GothamBold
+		title.Text = "House Scan Information"
+		title.TextColor3 = Color3.fromRGB(255, 255, 255)
+		title.TextSize = 16
+		title.TextXAlignment = Enum.TextXAlignment.Left
+		title.Parent = scanInfoFrame
+
+		local entries = {
+			{ name = "Furniture", y = 40 },
+			{ name = "Textures", y = 62 },
+			{ name = "Ambiance", y = 84 },
+			{ name = "House Type", y = 106 },
+		}
+		for _, entry in ipairs(entries) do
+			local label = Instance.new("TextLabel")
+			label.Name = entry.name:gsub("%s", "")
+			label.Size = UDim2.new(1, -20, 0, 20)
+			label.Position = UDim2.new(0, 10, 0, entry.y)
+			label.BackgroundTransparency = 1
+			label.Font = Enum.Font.Gotham
+			label.TextColor3 = Color3.fromRGB(225, 225, 235)
+			label.TextSize = 13
+			label.TextXAlignment = Enum.TextXAlignment.Left
+			label.Parent = scanInfoFrame
+			scanInfoLabels[entry.name] = label
+		end
+	end
+
+	local function updateScanInfoGui(f_count, f_cost, t_count, t_cost, amb, typ)
+		if not scanInfoGui then return end
+		scanInfoLabels.Furniture.Text = "Furniture: " .. f_count .. " ($" .. f_cost .. ")"
+		scanInfoLabels.Textures.Text = "Textures: " .. t_count .. " ($" .. t_cost .. ")"
+		scanInfoLabels.Ambiance.Text = "Ambiance: " .. amb
+		scanInfoLabels["House Type"].Text = "House Type: " .. typ
+	end
+
 	Manager:CreateSection("Process Status")
 	local status_label = Manager:CreateLabel("Building Status: Idle", "activity")
 	local prog_label = Manager:CreateLabel("Building Prog: -", "trending-up")
 	local item_label = Manager:CreateLabel("Items: -", "box")
 
 	local function setscaninfo(f_count, f_cost, t_count, t_cost, amb, typ)
+		scanInfoValues = { f_count, f_cost, t_count, t_cost, amb, typ }
+		updateScanInfoGui(f_count, f_cost, t_count, t_cost, amb, typ)
 		pcall(function()
 			furniture_label:Set("House Furniture: " .. f_count .. " ($" .. f_cost .. ")")
 			textures_label:Set("House Textures: " .. t_count .. " ($" .. t_cost .. ")")
@@ -94,6 +174,20 @@ local function loadMain()
 			type_label:Set("House Type: " .. typ)
 		end)
 	end
+
+	Manager:CreateToggle({
+		Name = "Show Scan Information Overlay",
+		CurrentValue = false,
+		Flag = "ShowScanInformationOverlay",
+		Callback = function(value)
+			scanInfoVisible = value
+			createScanInfoGui()
+			scanInfoGui.Enabled = value
+			if value then
+				updateScanInfoGui(table.unpack(scanInfoValues))
+			end
+		end,
+	})
 
 	local function updatestatus(s)
 		pcall(function()
@@ -268,9 +362,9 @@ local function loadMain()
 	end)
 
 
-	local function deserializeFileValue(value)
+	local function deserializeFileValue(value, preserveArrays)
 		if type(value) ~= "table" then return value end
-		if #value > 0 then
+		if not preserveArrays and #value > 0 then
 			if #value == 3 and type(value[1]) == "number" then return Color3.new(unpack(value)) end
 			if #value == 12 and type(value[1]) == "number" then return CFrame.new(unpack(value)) end
 		end
@@ -279,7 +373,9 @@ local function loadMain()
 		if value.__type == "CFrame" then return CFrame.new(unpack(value.components))
 		elseif value.__type == "Vector3" then return Vector3.new(value.x or value.X, value.y or value.Y, value.z or value.Z)
 		elseif value.__type == "Color3" then return Color3.new(value.r or value.R, value.g or value.G, value.b or value.B) end
-		for k, v in pairs(value) do value[k] = deserializeFileValue(v) end
+		for k, v in pairs(value) do
+			value[k] = deserializeFileValue(v, preserveArrays or k == "outfit")
+		end
 		return value
 	end
 
@@ -289,7 +385,14 @@ local function loadMain()
 			for i, f in ipairs(decoded.f) do
 				local colors = {}
 				for ck, cv in pairs(f.cl or {}) do colors[tonumber(ck)] = cv end
-				furniture[tostring(i)] = { id = f.i, cframe = f.c, colors = colors, scale = f.s }
+				furniture[tostring(i)] = {
+					id = f.i,
+					cframe = f.c,
+					colors = colors,
+					scale = f.s,
+					outfit = f.outfit or f.o,
+					outfit_name = f.outfit_name or f.on,
+				}
 			end
 			decoded.furniture = furniture
 			decoded.f = nil
@@ -337,7 +440,14 @@ local function loadMain()
 			for i, f in ipairs(decoded.furnitures) do
 				local colors = {}
 				for ck, cv in pairs(f.colors or {}) do colors[ck] = cv end
-				furniture[tostring(i)] = { id = f.id, cframe = f.cframe, colors = colors, scale = f.scale }
+				furniture[tostring(i)] = {
+					id = f.id,
+					cframe = f.cframe,
+					colors = colors,
+					scale = f.scale,
+					outfit = f.outfit,
+					outfit_name = f.outfit_name,
+				}
 			end
 			decoded.furniture = furniture
 			decoded.furnitures = nil
@@ -1781,6 +1891,49 @@ local function loadMain()
 
 	local max_retries = 3
 
+	local function applyRequestedOutfits(requests)
+		if type(requests) ~= "table" then return end
+
+		local success, interior = pcall(function()
+			return cd.get("house_interior")
+		end)
+		if not success or not interior or not interior.furniture then return end
+
+		local usedFurniture = {}
+		for _, request in ipairs(requests) do
+			local properties = request.properties or {}
+			if properties.outfit then
+				local matchedId
+				local closestDistance = math.huge
+				for furnitureId, furniture in pairs(interior.furniture) do
+					if not usedFurniture[furnitureId] and furniture.id == request.kind then
+						local distance = math.huge
+						if typeof(furniture.cframe) == "CFrame" and typeof(properties.cframe) == "CFrame" then
+							distance = (furniture.cframe.Position - properties.cframe.Position).Magnitude
+						end
+						if distance < closestDistance then
+							closestDistance = distance
+							matchedId = furnitureId
+						end
+					end
+				end
+				if matchedId and closestDistance <= 0.5 then
+					usedFurniture[matchedId] = true
+					pcall(function()
+						router.get("AvatarAPI/StartEditingMannequin"):InvokeServer(properties.outfit)
+						router.get("HousingAPI/ActivateFurniture"):InvokeServer(
+							plr,
+							matchedId,
+							"UseBlock",
+							{ save_outfit = true, outfit_name = properties.outfit_name or "Outfit" },
+							plr.Character
+						)
+					end)
+				end
+			end
+		end
+	end
+
 	local function placeFurnitures(furnList, isFix)
 		local totalfurnitures = #furnList
 		if totalfurnitures == 0 then return end
@@ -2016,6 +2169,8 @@ local function loadMain()
 					colors = normalizedColors,
 					cframe = v.cframe,
 					scale = v.scale,
+					outfit = v.outfit,
+					outfit_name = v.outfit_name,
 				},
 			})
 			processedCount += 1
@@ -2032,6 +2187,8 @@ local function loadMain()
 			pcall(function()
 				router.get("HousingAPI/BuyFurnitures"):InvokeServer(furniturest)
 			end)
+			task.wait(1)
+			applyRequestedOutfits(furniturest)
 		end
 
 		-- Activate furniture
@@ -2043,10 +2200,10 @@ local function loadMain()
 					pcall(function()
 						router.get("HousingAPI/ActivateFurniture"):InvokeServer(plr, i, "UseBlock", v.text, plr.Character)
 					end)
-				elseif v.outfit_name then
+				elseif v.outfit_name or v.outfit then
 					pcall(function()
 						router.get("AvatarAPI/StartEditingMannequin"):InvokeServer(v.outfit)
-						router.get("HousingAPI/ActivateFurniture"):InvokeServer(plr, i, "UseBlock", { save_outfit = true, outfit_name = "Outfit" }, plr.Character)
+						router.get("HousingAPI/ActivateFurniture"):InvokeServer(plr, i, "UseBlock", { save_outfit = true, outfit_name = v.outfit_name or "Outfit" }, plr.Character)
 					end)
 				end
 			end
@@ -2152,6 +2309,8 @@ local function loadMain()
 					colors = normalizedColors,
 					cframe = v.cframe,
 					scale = v.scale,
+					outfit = v.outfit,
+					outfit_name = v.outfit_name,
 				},
 			})
 			processedCount += 1
@@ -2166,6 +2325,8 @@ local function loadMain()
 
 		if #furniturest > 0 then
 			placeFurnitures(furniturest, false)
+			task.wait(1)
+			applyRequestedOutfits(furniturest)
 		end
 
 		if stopFlag then
@@ -2182,10 +2343,10 @@ local function loadMain()
 					pcall(function()
 						router.get("HousingAPI/ActivateFurniture"):InvokeServer(plr, i, "UseBlock", v.text, plr.Character)
 					end)
-				elseif v.outfit_name then
+				elseif v.outfit_name or v.outfit then
 					pcall(function()
 						router.get("AvatarAPI/StartEditingMannequin"):InvokeServer(v.outfit)
-						router.get("HousingAPI/ActivateFurniture"):InvokeServer(plr, i, "UseBlock", { save_outfit = true, outfit_name = "Outfit" }, plr.Character)
+						router.get("HousingAPI/ActivateFurniture"):InvokeServer(plr, i, "UseBlock", { save_outfit = true, outfit_name = v.outfit_name or "Outfit" }, plr.Character)
 					end)
 				end
 			end
@@ -2269,7 +2430,13 @@ local function loadMain()
 				if canbuy then
 					table.insert(missing, {
 						kind = savedItem.id,
-						properties = { colors = savedItem.colors, cframe = savedItem.cframe, scale = savedItem.scale },
+						properties = {
+							colors = savedItem.colors,
+							cframe = savedItem.cframe,
+							scale = savedItem.scale,
+							outfit = savedItem.outfit,
+							outfit_name = savedItem.outfit_name,
+						},
 					})
 				else
 					skipped += 1
@@ -2288,6 +2455,8 @@ local function loadMain()
 		end
 		Rayfield:Notify({ Title = "Fixing", Content = "Attempting to place " .. #missing .. " missing items...", Duration = 5, Image = "loader" })
 		placeFurnitures(missing, true)
+		task.wait(1)
+		applyRequestedOutfits(missing)
 		if stopFlag then
 			updatestatus("Stopped") updateprog("-") updateitem("-")
 			return
@@ -2300,10 +2469,10 @@ local function loadMain()
 					pcall(function()
 						router.get("HousingAPI/ActivateFurniture"):InvokeServer(plr, i, "UseBlock", v.text, plr.Character)
 					end)
-				elseif v.outfit_name then
+				elseif v.outfit_name or v.outfit then
 					pcall(function()
 						router.get("AvatarAPI/StartEditingMannequin"):InvokeServer(v.outfit)
-						router.get("HousingAPI/ActivateFurniture"):InvokeServer(plr, i, "UseBlock", { save_outfit = true, outfit_name = "Outfit" }, plr.Character)
+						router.get("HousingAPI/ActivateFurniture"):InvokeServer(plr, i, "UseBlock", { save_outfit = true, outfit_name = v.outfit_name or "Outfit" }, plr.Character)
 					end)
 				end
 			end
@@ -2587,7 +2756,14 @@ local function loadMain()
 			for i, f in ipairs(decoded.f) do
 				local colors = {}
 				for ck, cv in pairs(f.cl or {}) do colors[tonumber(ck)] = cv end
-				furniture[tostring(i)] = { id = f.i, cframe = f.c, colors = colors, scale = f.s }
+				furniture[tostring(i)] = {
+					id = f.i,
+					cframe = f.c,
+					colors = colors,
+					scale = f.s,
+					outfit = f.outfit or f.o,
+					outfit_name = f.outfit_name or f.on,
+				}
 			end
 			decoded.furniture = furniture
 			decoded.f = nil
@@ -2630,7 +2806,14 @@ local function loadMain()
 			for i, f in ipairs(decoded.furnitures) do
 				local colors = {}
 				for ck, cv in pairs(f.colors or {}) do colors[ck] = cv end
-				furniture[tostring(i)] = { id = f.id, cframe = f.cframe, colors = colors, scale = f.scale }
+				furniture[tostring(i)] = {
+					id = f.id,
+					cframe = f.cframe,
+					colors = colors,
+					scale = f.scale,
+					outfit = f.outfit,
+					outfit_name = f.outfit_name,
+				}
 			end
 			decoded.furniture = furniture
 			decoded.furnitures = nil
@@ -2969,7 +3152,14 @@ local function loadMain()
 			for i, f in ipairs(decoded.furnitures) do
 				local colors = {}
 				for ck, cv in pairs(f.colors or {}) do colors[ck] = cv end
-				furniture[tostring(i)] = { id = f.id, cframe = f.cframe, colors = colors, scale = f.scale }
+				furniture[tostring(i)] = {
+					id = f.id,
+					cframe = f.cframe,
+					colors = colors,
+					scale = f.scale,
+					outfit = f.outfit,
+					outfit_name = f.outfit_name,
+				}
 			end
 			decoded.furniture = furniture
 			decoded.furnitures = nil
