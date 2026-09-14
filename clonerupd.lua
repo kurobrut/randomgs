@@ -1610,26 +1610,46 @@ local function loadMain()
 	end
 
 	autoBuyQueuedHouses = function()
-		if not autoBuyQueuedEnabled or #fileQueue == 0 or autoBuyQueuedRunning then return end
+		if not autoBuyQueuedEnabled or #fileQueue == 0 or autoBuyQueuedRunning then
+			return
+		end
 
 		autoBuyQueuedRunning = true
+
 		task.spawn(function()
 			local ok, err = pcall(function()
-				refreshOwnedHouses()
+
+				-- ==========================================
+				-- IMPORTANT:
+				-- The queue itself determines how many houses
+				-- need to be purchased.
+				--
+				-- We DO NOT check how many houses the player
+				-- already owns.
+				-- ==========================================
+
 				local required = {}
+
 				for _, entry in ipairs(fileQueue) do
 					local houseType = getFileHouseType(entry.houseData)
-					
-					-- FIX: Convert display names back to database IDs
+
+					-- Convert known display name to database kind
 					if houseType == "Tiny Home" then
 						houseType = "micro_2023"
 					end
-					
-					local buyKind
+
+					local buyKind = nil
+
+					-- Find the actual purchasable HouseDB kind
 					for dbKind, data in pairs(HouseDB) do
 						if type(data) ~= "table" then
 							continue
 						end
+
+						if data.is_for_sale == false then
+							continue
+						end
+
 						local candidates = {
 							data.kind,
 							dbKind,
@@ -1637,67 +1657,135 @@ local function loadMain()
 							data.type,
 							data.name,
 						}
+
 						for _, candidate in ipairs(candidates) do
-							if data.is_for_sale ~= false and candidate and (
-								string.lower(tostring(candidate)) == string.lower(tostring(houseType))
+							if candidate and (
+								string.lower(tostring(candidate))
+									== string.lower(tostring(houseType))
 								or isExactSameHouseType(houseType, candidate)
 							) then
 								buyKind = data.kind or dbKind
 								break
 							end
 						end
+
 						if buyKind then
 							break
 						end
 					end
+
 					if buyKind then
 						required[buyKind] = (required[buyKind] or 0) + 1
+					else
+						Rayfield:Notify({
+							Title = "Auto Buy",
+							Content = "Could not find purchasable house for: "
+								.. tostring(houseType),
+							Duration = 4,
+						})
 					end
 				end
 
-				for kind, needed in pairs(required) do
-					if not autoBuyQueuedEnabled then return end
-					refreshOwnedHouses()
+				-- ==========================================
+				-- BUY EXACTLY WHAT IS IN THE QUEUE
+				-- ==========================================
 
-					local owned = 0
-					for _, ownedHouseType in pairs(ownedHouseTypeMap) do
-						if ownedHouseType == kind or isExactSameHouseType(ownedHouseType, kind) then
-							owned += 1
-						end
+				local totalRequired = 0
+
+				for _, amount in pairs(required) do
+					totalRequired += amount
+				end
+
+				if totalRequired == 0 then
+					return
+				end
+
+				local boughtTotal = 0
+
+				for kind, needed in pairs(required) do
+					if not autoBuyQueuedEnabled then
+						return
 					end
 
-					while owned < needed and autoBuyQueuedEnabled do
+					for i = 1, needed do
+						if not autoBuyQueuedEnabled then
+							return
+						end
+
 						local before = {}
+
 						for _, house in pairs(ClientData.get("house_manager") or {}) do
 							before[house.house_id] = true
 						end
-						local success = pcall(function()
+
+						local success, buyError = pcall(function()
 							Router.get("HousingAPI/BuyHouseWithAddons")
-								:InvokeServer(kind, {}, Color3.fromRGB(255, 182, 193))
+								:InvokeServer(
+									kind,
+									{},
+									Color3.fromRGB(255, 182, 193)
+								)
 						end)
+
 						if success then
-							owned += 1
+							boughtTotal += 1
+
 							Rayfield:Notify({
 								Title = "Auto Buy",
-								Content = "Buying queued " .. tostring(kind) .. " house (" .. owned .. "/" .. needed .. ")",
+								Content =
+									"Buying queued "
+									.. tostring(kind)
+									.. " ("
+									.. i
+									.. "/"
+									.. needed
+									.. ")"
+									.. "\nTotal: "
+									.. boughtTotal
+									.. "/"
+									.. totalRequired,
 								Duration = 2,
 							})
+
 							task.wait(1)
+
+							-- Rename the newly purchased house
 							autoRenameNewHouse(before)
+
 						else
 							Rayfield:Notify({
 								Title = "Auto Buy",
-								Content = "Failed to buy queued " .. tostring(kind) .. " house ❌",
-								Duration = 3,
+								Content =
+									"Failed to buy "
+									.. tostring(kind)
+									.. " ❌"
+									.. "\n"
+									.. tostring(buyError or ""),
+								Duration = 4,
 							})
+
+							-- Stop this purchase type if Roblox rejects it
 							break
 						end
+
 						task.wait(0.5)
-						refreshOwnedHouses()
 					end
 				end
+
+				Rayfield:Notify({
+					Title = "Auto Buy",
+					Content =
+						"Finished buying queued houses 🏠"
+						.. "\nBought: "
+						.. boughtTotal
+						.. "/"
+						.. totalRequired,
+					Duration = 5,
+				})
 			end)
+
 			autoBuyQueuedRunning = false
+
 			if not ok then
 				warn("Queued house auto-buy failed: " .. tostring(err))
 			end
