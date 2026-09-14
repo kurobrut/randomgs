@@ -325,6 +325,17 @@ local function loadMain()
 
 	local autoPasteSelections = {}  -- { [house_id] = display_name }
 	local autoPasteRunning = false
+	local autoListAfterPaste = false
+	local queueKaliremHouses
+	local processAutoList
+	local autoBuyQueuedHouses
+	local autoBuyQueuedEnabled = false
+	local autoBuyQueuedRunning = false
+	local autoBuyQueuedToggle
+	local autoTradeEnabled = false
+	local selectedPlayer = nil
+	local autoAcceptToggle
+	local PlayerDropdown
 	local autoPasteMode = "fast"
 	local autoPasteSource = "loaded"
 	local autoPasteSingleFile = false
@@ -696,6 +707,9 @@ local function loadMain()
 			pastebinValue = autoPastePastebinValue,
 			targetHouseIds = targetIds,
 			queue = serializeAutoPasteValue(fileQueue),
+			autoAcceptPlayer = selectedPlayer,
+			autoAcceptEnabled = autoTradeEnabled,
+			autoBuyQueuedHouses = autoBuyQueuedEnabled,
 		}
 
 		local ok, encoded = pcall(function() return HttpService:JSONEncode(config) end)
@@ -732,6 +746,9 @@ local function loadMain()
 		autoPasteMode = config.pasteMode == "slow" and "slow" or "fast"
 		autoPasteQueueCopies = math.clamp(math.floor(tonumber(config.queueCopies) or 1), 1, 50)
 		autoPastePastebinValue = tostring(config.pastebinValue or "")
+		selectedPlayer = type(config.autoAcceptPlayer) == "string" and config.autoAcceptPlayer or nil
+		autoTradeEnabled = config.autoAcceptEnabled == true
+		autoBuyQueuedEnabled = config.autoBuyQueuedHouses == true
 
 		table.clear(autoPasteSelections)
 		local missingTargets = 0
@@ -753,6 +770,15 @@ local function loadMain()
 
 		setAutoPasteSource(autoPasteSource)
 		if autoPasteDropdown then pcall(function() autoPasteDropdown:Set(getAutoPasteTargetNames()) end) end
+		if PlayerDropdown then
+			pcall(function() PlayerDropdown:Set(selectedPlayer or "None") end)
+		end
+		if autoAcceptToggle then
+			pcall(function() autoAcceptToggle:Set(autoTradeEnabled) end)
+		end
+		if autoBuyQueuedToggle then
+			pcall(function() autoBuyQueuedToggle:Set(autoBuyQueuedEnabled) end)
+		end
 		rebuildQueueLabel()
 		setAPFileInfo()
 		return true, #fileQueue, missingTargets
@@ -830,6 +856,18 @@ local function loadMain()
 		Callback = function(v)
 			autoPasteSingleFile = v
 			autoSaveAutoPasteConfig()
+		end,
+	})
+
+	autoBuyQueuedToggle = AutoPasteTab:CreateToggle({
+		Name = "Auto Buy Queued Houses",
+		CurrentValue = false,
+		Callback = function(value)
+			autoBuyQueuedEnabled = value
+			autoSaveAutoPasteConfig()
+			if value and #fileQueue > 0 and autoBuyQueuedHouses then
+				autoBuyQueuedHouses()
+			end
 		end,
 	})
 
@@ -917,6 +955,9 @@ local function loadMain()
 			rebuildQueueLabel()
 			setAPFileInfo()
 			autoSaveAutoPasteConfig()
+			if added > 0 and autoBuyQueuedEnabled and autoBuyQueuedHouses then
+				autoBuyQueuedHouses()
+			end
 			if added > 0 then
 				Rayfield:Notify({ Title = "File Queue", Content = added .. " file(s) added", Duration = 3 })
 			end
@@ -964,6 +1005,9 @@ local function loadMain()
 			rebuildQueueLabel()
 			setAPFileInfo()
 			autoSaveAutoPasteConfig()
+			if autoBuyQueuedEnabled and autoBuyQueuedHouses then
+				autoBuyQueuedHouses()
+			end
 
 			Rayfield:Notify({
 				Title = "Pastebin Queue",
@@ -1428,6 +1472,25 @@ local function loadMain()
 				setAPStatus("Idle")
 				setAPProg("-")
 				Rayfield:Notify({ Title = "Auto Paste", Content = "Auto paste finished", Duration = 5 })
+				if autoListAfterPaste then
+					task.spawn(function()
+						while autoPasteRunning and autoListAfterPaste do
+							task.wait(0.5)
+						end
+						if autoListAfterPaste and not stopFlag then
+							local selectedCount = queueKaliremHouses()
+							if selectedCount > 0 then
+								processAutoList()
+							else
+								Rayfield:Notify({
+									Title = "Auto Trade",
+									Content = "No Kalirem houses found to list",
+									Duration = 3,
+								})
+							end
+						end
+					end)
+				end
 			end)
 		end,
 	})
@@ -1544,6 +1607,101 @@ local function loadMain()
 		end
 		refreshOwnedHouses()
 		return true
+	end
+
+	autoBuyQueuedHouses = function()
+		if not autoBuyQueuedEnabled or #fileQueue == 0 or autoBuyQueuedRunning then return end
+
+		autoBuyQueuedRunning = true
+		task.spawn(function()
+			local ok, err = pcall(function()
+				refreshOwnedHouses()
+				local required = {}
+				for _, entry in ipairs(fileQueue) do
+					local houseType = getFileHouseType(entry.houseData)
+					
+					-- FIX: Convert display names back to database IDs
+					if houseType == "Tiny Home" then
+						houseType = "micro_2023"
+					end
+					
+					local buyKind
+					for dbKind, data in pairs(HouseDB) do
+						if type(data) ~= "table" then
+							continue
+						end
+						local candidates = {
+							data.kind,
+							dbKind,
+							data.building_type,
+							data.type,
+							data.name,
+						}
+						for _, candidate in ipairs(candidates) do
+							if data.is_for_sale ~= false and candidate and (
+								string.lower(tostring(candidate)) == string.lower(tostring(houseType))
+								or isExactSameHouseType(houseType, candidate)
+							) then
+								buyKind = data.kind or dbKind
+								break
+							end
+						end
+						if buyKind then
+							break
+						end
+					end
+					if buyKind then
+						required[buyKind] = (required[buyKind] or 0) + 1
+					end
+				end
+
+				for kind, needed in pairs(required) do
+					if not autoBuyQueuedEnabled then return end
+					refreshOwnedHouses()
+
+					local owned = 0
+					for _, ownedHouseType in pairs(ownedHouseTypeMap) do
+						if ownedHouseType == kind or isExactSameHouseType(ownedHouseType, kind) then
+							owned += 1
+						end
+					end
+
+					while owned < needed and autoBuyQueuedEnabled do
+						local before = {}
+						for _, house in pairs(ClientData.get("house_manager") or {}) do
+							before[house.house_id] = true
+						end
+						local success = pcall(function()
+							Router.get("HousingAPI/BuyHouseWithAddons")
+								:InvokeServer(kind, {}, Color3.fromRGB(255, 182, 193))
+						end)
+						if success then
+							owned += 1
+							Rayfield:Notify({
+								Title = "Auto Buy",
+								Content = "Buying queued " .. tostring(kind) .. " house (" .. owned .. "/" .. needed .. ")",
+								Duration = 2,
+							})
+							task.wait(1)
+							autoRenameNewHouse(before)
+						else
+							Rayfield:Notify({
+								Title = "Auto Buy",
+								Content = "Failed to buy queued " .. tostring(kind) .. " house ❌",
+								Duration = 3,
+							})
+							break
+						end
+						task.wait(0.5)
+						refreshOwnedHouses()
+					end
+				end
+			end)
+			autoBuyQueuedRunning = false
+			if not ok then
+				warn("Queued house auto-buy failed: " .. tostring(err))
+			end
+		end)
 	end
 
 	ownedDropdown = BuyerTab:CreateDropdown({
@@ -1742,6 +1900,132 @@ local function loadMain()
 		end)
 	end
 
+	queueKaliremHouses = function()
+		refreshOwnedHouses()
+		for _, house in pairs(ClientData.get("house_manager") or {}) do
+			local houseName = tostring(house.name or "")
+			if string.lower(houseName) == "kalirem"
+				or string.lower(houseName):sub(1, 8) == "kalirem "
+			then
+				tradeSelections[house.house_id] = houseName
+			end
+		end
+
+		local selectedCount = 0
+		for _ in pairs(tradeSelections) do selectedCount += 1 end
+		lastTradeCount = selectedCount
+		if tradeDropdown then
+			local selectedNames = {}
+			for _, name in pairs(tradeSelections) do
+				table.insert(selectedNames, name)
+			end
+			pcall(function() tradeDropdown:Set(selectedNames) end)
+		end
+		return selectedCount
+	end
+
+	processAutoList = function()
+		if tradingRunning then return end
+		tradingRunning = true
+	
+		task.spawn(function()
+			local currentQueue = {}
+			for id, name in pairs(tradeSelections) do
+				table.insert(currentQueue, { id = id, name = name })
+			end
+	
+			for _, entry in ipairs(currentQueue) do
+				if not tradingRunning then break end
+				Rayfield:Notify({
+					Title = "Auto Trade",
+					Content = "Spawning " .. entry.name,
+					Duration = 3,
+				})
+	
+				local spawnSuccess = pcall(function()
+					Router.get("HousingAPI/SpawnHouse"):FireServer(entry.id)
+				end)
+				if not spawnSuccess then
+					Rayfield:Notify({
+						Title = "Auto Trade",	
+						Content = "Failed to spawn " .. entry.name .. " ❌",
+						Duration = 3,
+					})
+					continue
+				end
+	
+				task.wait(5)
+	
+				local listSuccess = pcall(function()
+					Router.get("HousingAPI/ListHouse"):InvokeServer(entry.id)
+				end)
+				Rayfield:Notify({
+					Title = "Auto List",
+					Content = listSuccess
+						and (entry.name .. " listed ✔")
+						or ("Failed to list " .. entry.name .. " ❌"),
+					Duration = 3,
+				})
+				
+				-- FIX: Wait for house to disappear from inventory after listing
+				if listSuccess then
+					if waitUntilHouseGone(entry.id, 60) then
+						tradeSelections[entry.id] = nil
+					end
+				end
+				
+				-- FIX: Increased delay from 1 to 2 seconds
+				task.wait(2)
+			end
+	
+			tradingRunning = false
+		end)
+	end
+ 
+
+	local autoTradeToggle
+	autoTradeToggle = AutoPasteTab:CreateToggle({
+		Name = "Auto Trade",
+		CurrentValue = false,
+		Callback = function(value)
+			autoListAfterPaste = value
+			if value then
+				if autoPasteRunning then
+					Rayfield:Notify({
+						Title = "Auto Trade",
+						Content = "Will list Kalirem houses when Auto Paste finishes",
+						Duration = 3,
+					})
+				else
+					local selectedCount = queueKaliremHouses()
+					if selectedCount == 0 then
+						pcall(function() autoTradeToggle:Set(false) end)
+						autoListAfterPaste = false
+						Rayfield:Notify({
+							Title = "Auto Trade",
+							Content = "No Kalirem houses found",
+							Duration = 3,
+						})
+						return
+					end
+					Rayfield:Notify({
+						Title = "Auto Trade",
+						Content = "Listing " .. selectedCount .. " Kalirem house(s)",
+						Duration = 3,
+					})
+					processAutoList()
+				end
+			else
+				tradingRunning = false
+				table.clear(tradeSelections)
+				lastTradeCount = 0
+				pcall(function()
+					if tradeDropdown then tradeDropdown:Set({}) end
+				end)
+			end
+		end,
+	})
+
 	TradeTab:CreateButton({ Name = "Start Trading Queue", Callback = processTrade })
 
 	TradeTab:CreateButton({
@@ -1862,6 +2146,27 @@ local function loadMain()
 			return false, false
 		end
 		return db_entry.cost < (player_data.money or 0), true
+	end
+
+	local function notifyUnavailableFurniture(items)
+		if #items == 0 then return end
+		local names = {}
+		for _, kind in ipairs(items) do
+			if not table.find(names, kind) then
+				table.insert(names, kind)
+			end
+		end
+		local content = "Skipped " .. #items .. " unavailable furniture item(s)."
+		if #names <= 3 then
+			content = content .. "\n" .. table.concat(names, ", ")
+		else
+			content = content .. "\n" .. names[1] .. ", " .. names[2] .. ", " .. names[3] .. ", ..."
+		end
+		Rayfield:Notify({
+			Title = "Unavailable Furniture",
+			Content = content,
+			Duration = 8,
+		})
 	end
 
 	local function textureexists(room, texturetype, texture)
@@ -2139,6 +2444,7 @@ local function loadMain()
 
 		local processedCount = 0
 		local furniturest = {}
+		local unavailableFurniture = {}
 
 		for i, v in pairs(validFurniture) do
 			if stopFlag then break end
@@ -2147,6 +2453,7 @@ local function loadMain()
 				updatestatus("Idle") updateprog("-") updateitem("-")
 				return Rayfield:Notify({ Title = "Error", Content = "Insufficient funds for furniture: " .. v.id, Duration = 3, Image = "circle-alert" })
 			elseif not canbuy and exists == false then
+				table.insert(unavailableFurniture, v.id)
 				processedCount += 1
 				updateprog(processedCount .. "/" .. totalfurnitures)
 				continue
@@ -2177,6 +2484,8 @@ local function loadMain()
 			updateprog(processedCount .. "/" .. totalfurnitures)
 			updateitem(v.id)
 		end
+
+		notifyUnavailableFurniture(unavailableFurniture)
 
 		if stopFlag then
 			updatestatus("Stopped") updateprog("-") updateitem("-")
@@ -2279,6 +2588,7 @@ local function loadMain()
 
 		local processedCount = 0
 		local furniturest = {}
+		local unavailableFurniture = {}
 
 		for i, v in pairs(validFurniture) do
 			if stopFlag then break end
@@ -2287,6 +2597,7 @@ local function loadMain()
 				updatestatus("Idle") updateprog("-") updateitem("-")
 				return Rayfield:Notify({ Title = "Error", Content = "Insufficient funds for furniture: " .. v.id, Duration = 3, Image = "circle-alert" })
 			elseif not canbuy and exists == false then
+				table.insert(unavailableFurniture, v.id)
 				processedCount += 1
 				updateprog(processedCount .. "/" .. totalfurnitures)
 				continue
@@ -2317,6 +2628,8 @@ local function loadMain()
 			updateprog(processedCount .. "/" .. totalfurnitures)
 			updateitem(v.id)
 		end
+
+		notifyUnavailableFurniture(unavailableFurniture)
 
 		if stopFlag then
 			updatestatus("Stopped") updateprog("-") updateitem("-")
@@ -2573,8 +2886,6 @@ local function loadMain()
 	})
 
 	local tradeSection = Tab:CreateSection("Auto Accept Trade Requests")
-	local autoTradeEnabled = false
-	local selectedPlayer = nil
 	local TradeRequestEvent = router.get_event("TradeAPI/TradeRequestReceived")
 
 	local function resolvePlayer(obj)
@@ -2593,7 +2904,7 @@ local function loadMain()
 		return t
 	end
 
-	local PlayerDropdown = Tab:CreateDropdown({
+	PlayerDropdown = Tab:CreateDropdown({
 		Name = "Select Player",
 		Options = getPlayers(),
 		CurrentOption = "None",
@@ -2605,6 +2916,7 @@ local function loadMain()
 			else
 				selectedPlayer = value
 			end
+			autoSaveAutoPasteConfig()
 		end,
 	})
 
@@ -2624,10 +2936,12 @@ local function loadMain()
 		Callback = function(text)
 			if text ~= "" then
 				selectedPlayer = text
+				autoSaveAutoPasteConfig()
 				Rayfield:Notify({ Title = "Player Set", Content = "Now accepting: " .. text, Duration = 3 })
 			else
 				selectedPlayer = nil
 				PlayerDropdown:Set("None")
+				autoSaveAutoPasteConfig()
 			end
 		end,
 	})
@@ -2658,11 +2972,12 @@ local function loadMain()
 		end
 	end)
 
-	Tab:CreateToggle({
+	autoAcceptToggle = Tab:CreateToggle({
 		Name = "Auto Accept Player",
 		CurrentValue = false,
 		Callback = function(val)
 			autoTradeEnabled = val
+			autoSaveAutoPasteConfig()
 			Rayfield:Notify({ Title = "Auto Trade", Content = val and ("Enabled for: " .. (selectedPlayer or "None")) or "Disabled", Duration = 3 })
 		end,
 	})
@@ -2948,7 +3263,6 @@ local function loadMain()
 			end
 			clean_house.total_cost = furniturecost + texturecost
 			clean_house.furniture_quantity = countfurnitures(clean_house.furniture)
-			if clean_house.building_type == "micro_2023" then clean_house.building_type = "Tiny Home" end
 			clean_house.saved_by = "Cubix-HouseCloner"
 			clean_house.properties = nil clean_house.house_id = nil clean_house.listed_for_trade = nil
 			clean_house.unique = nil clean_house.active_addons = nil clean_house.allows_coop_building = nil
@@ -3099,7 +3413,6 @@ local function loadMain()
 			end
 			clean_house.total_cost = furniturecost + texturecost
 			clean_house.furniture_quantity = countfurnitures(clean_house.furniture)
-			if clean_house.building_type == "micro_2023" then clean_house.building_type = "Tiny Home" end
 			clean_house.saved_by = "Cubix-HouseCloner"
 			clean_house.properties = nil clean_house.house_id = nil clean_house.listed_for_trade = nil
 			clean_house.unique = nil clean_house.active_addons = nil clean_house.allows_coop_building = nil
@@ -3302,7 +3615,7 @@ local function loadMain()
 		end,
 	})
 
-	-- ==================== AUTO REFRESH ====================
+	-- ==================== AUTO REFRESH ====================	
 	task.spawn(function()
 		task.wait(2)
 		refreshOwnedHouses()
