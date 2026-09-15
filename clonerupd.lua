@@ -1588,18 +1588,37 @@ local function loadMain()
 			return false
 		end
 		for _, kind in ipairs(selectedHouseKinds) do
-			local before = {}
+			-- Count houses BEFORE
+			local before_count = 0
 			for _, h in pairs(ClientData.get("house_manager") or {}) do
-				before[h.house_id] = true
+				before_count = before_count + 1
 			end
+
 			local success = pcall(function()
 				Router.get("HousingAPI/BuyHouseWithAddons")
 					:InvokeServer(kind, {}, Color3.fromRGB(255, 182, 193))
 			end)
+
 			if success then
-				Rayfield:Notify({ Title = "Auto Buy", Content = "Buying " .. tostring(kind) .. " 🏠", Duration = 2 })
-				task.wait(1)
-				autoRenameNewHouse(before)
+				task.wait(1.5) -- Wait for server
+
+				-- Count houses AFTER
+				local after_count = 0
+				for _, h in pairs(ClientData.get("house_manager") or {}) do
+					after_count = after_count + 1
+				end
+
+				if after_count > before_count then
+					Rayfield:Notify({ Title = "Auto Buy", Content = "Bought " .. tostring(kind) .. " 🏠", Duration = 2 })
+					-- Rename if needed
+					local before = {}
+					for _, h in pairs(ClientData.get("house_manager") or {}) do
+						before[h.house_id] = true
+					end
+					autoRenameNewHouse(before)
+				else
+					Rayfield:Notify({ Title = "Auto Buy", Content = "Already own " .. tostring(kind) .. " ⏭️", Duration = 2 })
+				end
 			else
 				Rayfield:Notify({ Title = "Auto Buy", Content = "Failed " .. tostring(kind) .. " ❌", Duration = 2 })
 			end
@@ -1618,15 +1637,6 @@ local function loadMain()
 
 		task.spawn(function()
 			local ok, err = pcall(function()
-
-				-- ==========================================
-				-- IMPORTANT:
-				-- The queue itself determines how many houses
-				-- need to be purchased.
-				--
-				-- We DO NOT check how many houses the player
-				-- already owns.
-				-- ==========================================
 
 				local required = {}
 
@@ -2015,21 +2025,22 @@ local function loadMain()
 	processAutoList = function()
 		if tradingRunning then return end
 		tradingRunning = true
-	
+
 		task.spawn(function()
 			local currentQueue = {}
 			for id, name in pairs(tradeSelections) do
 				table.insert(currentQueue, { id = id, name = name })
 			end
-	
+
 			for _, entry in ipairs(currentQueue) do
 				if not tradingRunning then break end
+				
 				Rayfield:Notify({
 					Title = "Auto Trade",
 					Content = "Spawning " .. entry.name,
 					Duration = 3,
 				})
-	
+
 				local spawnSuccess = pcall(function()
 					Router.get("HousingAPI/SpawnHouse"):FireServer(entry.id)
 				end)
@@ -2041,9 +2052,9 @@ local function loadMain()
 					})
 					continue
 				end
-	
+
 				task.wait(5)
-	
+
 				local listSuccess = pcall(function()
 					Router.get("HousingAPI/ListHouse"):InvokeServer(entry.id)
 				end)
@@ -2055,17 +2066,21 @@ local function loadMain()
 					Duration = 3,
 				})
 				
-				-- FIX: Wait for house to disappear from inventory after listing
+				-- FIX: Wait for house to actually disappear from inventory
 				if listSuccess then
+					-- Wait until the house is gone before trading the next one
 					if waitUntilHouseGone(entry.id, 60) then
+						tradeSelections[entry.id] = nil
+					else
+						-- If timeout, still remove from queue to prevent loop
 						tradeSelections[entry.id] = nil
 					end
 				end
 				
-				-- FIX: Increased delay from 1 to 2 seconds
-				task.wait(2)
+				-- FIX: Increased delay to allow server to process
+				task.wait(3)
 			end
-	
+
 			tradingRunning = false
 		end)
 	end
