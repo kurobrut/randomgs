@@ -2568,7 +2568,7 @@ local function loadMain()
 				table.insert(names, kind)
 			end
 		end
-		local content = "Skipped " .. #items .. " unavailable furniture item(s)."
+		local content = "Skipped " .. #items .. " unavailable furniture item(s). Auto Paste will continue and remove the completed house from the queue."
 		if #names <= 3 then
 			content = content .. "\n" .. table.concat(names, ", ")
 		else
@@ -2952,9 +2952,11 @@ local function loadMain()
 		end
 
 		if not texturesSuccessful then
-			Rayfield:Notify({ Title = "Warning", Content = "Furniture pasted, but one or more textures failed", Duration = 5, Image = "circle-alert" })
+			-- Unavailable/failed textures are non-fatal. Keep the furniture that was
+			-- successfully pasted and let Auto Paste remove this file from the queue.
+			Rayfield:Notify({ Title = "Warning", Content = "Paste completed. Unavailable/failed textures were skipped.", Duration = 5, Image = "circle-alert" })
 			updatestatus("Idle") updateprog("-") updateitem("-")
-			return false
+			return true
 		end
 		Rayfield:Notify({ Title = "Success", Content = "House Placed successfully!", Duration = 3, Image = "circle-check" })
 		updatestatus("Idle")
@@ -3114,9 +3116,11 @@ local function loadMain()
 		end
 
 		if not texturesSuccessful then
-			Rayfield:Notify({ Title = "Warning", Content = "Furniture pasted, but one or more textures failed", Duration = 5, Image = "circle-alert" })
+			-- Unavailable/failed textures are non-fatal. Keep the furniture that was
+			-- successfully pasted and let Auto Paste remove this file from the queue.
+			Rayfield:Notify({ Title = "Warning", Content = "Paste completed. Unavailable/failed textures were skipped.", Duration = 5, Image = "circle-alert" })
 			updatestatus("Idle") updateprog("-") updateitem("-")
-			return false
+			return true
 		end
 		Rayfield:Notify({ Title = "Success", Content = "House Placed successfully! (Slow mode)", Duration = 3, Image = "circle-check" })
 		updatestatus("Idle")
