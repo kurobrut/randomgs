@@ -1659,23 +1659,9 @@ local function loadMain()
 					Rayfield:Notify({ Title = "Auto Paste", Content = "Auto paste finished", Duration = 5 })
 				end
 				if autoListAfterPaste and not wasStopped then
-					task.spawn(function()
-						while autoPasteRunning and autoListAfterPaste do
-							task.wait(0.5)
-						end
-						if autoListAfterPaste and not stopFlag then
-							local selectedCount = queueKaliremHouses()
-							if selectedCount > 0 then
-								processAutoList()
-							else
-								Rayfield:Notify({
-									Title = "Auto Trade",
-									Content = "No Kalirem houses found to list",
-									Duration = 3,
-								})
-							end
-						end
-					end)
+					-- The Auto Trade worker is persistent. Calling this again is safe:
+					-- it either starts the watcher or leaves the existing watcher running.
+					processAutoList()
 				end
 			end)
 		end,
@@ -2218,36 +2204,63 @@ local function loadMain()
 	local function isKaliremHouseName(name)
 		local lowered = string.lower(tostring(name or ""))
 		-- Match every owned house whose name starts with "Kalirem".
-		-- This includes names such as Kalirem, Kalirem 1, Kalirem House, etc.
+		-- This includes Kalirem, Kalirem 1, Kalirem House, etc.
 		return lowered:match("^%s*kalirem") ~= nil
 	end
 
-	local function refreshKaliremTradeSelections()
-		refreshOwnedHouses()
-		table.clear(tradeSelections)
+	-- Auto Paste Auto Trade uses its own worker state. Do not share
+	-- tradingRunning/tradeSelections with the manual Trading tab queue.
+	local autoTradeLoopRunning = false
+	local autoTradeLoopToken = 0
+	local autoTradeWaitingNoticeShown = false
 
-		for _, house in pairs(ClientData.get("house_manager") or {}) do
+	local function getKaliremTradeHouses()
+		-- Poll ClientData directly. Do not call refreshOwnedHouses() every second;
+		-- that refreshes several Rayfield dropdowns and can cause unnecessary lag.
+		local manager = {}
+		pcall(function()
+			manager = ClientData.get("house_manager") or {}
+		end)
+
+		local matches = {}
+		for _, house in pairs(manager) do
 			local houseName = tostring(house.name or "")
-			if isKaliremHouseName(houseName) then
-				tradeSelections[house.house_id] = houseName
+			if house.house_id and isKaliremHouseName(houseName) then
+				table.insert(matches, {
+					id = house.house_id,
+					name = houseName,
+				})
 			end
 		end
 
-		local selectedCount = 0
-		local selectedNames = {}
-		for _, name in pairs(tradeSelections) do
-			selectedCount += 1
-			table.insert(selectedNames, name)
-		end
-		table.sort(selectedNames)
+		-- Make the order stable. Numbered Kalirem houses are handled in number order,
+		-- with the house id as the final tie-breaker.
+		table.sort(matches, function(a, b)
+			local aNum = tonumber(a.name:match("[Kk][Aa][Ll][Ii][Rr][Ee][Mm]%s*(%d+)"))
+			local bNum = tonumber(b.name:match("[Kk][Aa][Ll][Ii][Rr][Ee][Mm]%s*(%d+)"))
+			if aNum and bNum and aNum ~= bNum then
+				return aNum < bNum
+			elseif aNum and not bNum then
+				return true
+			elseif bNum and not aNum then
+				return false
+			end
 
-		lastTradeCount = selectedCount
-		-- Do not call tradeDropdown:Set() here. Rayfield's Set can trigger the
-		-- dropdown callback, which rebuilds selections by display name and can
-		-- collapse multiple houses that share the same Kalirem name. Auto Trade
-		-- keeps its own ID-based queue so every matching house is preserved.
+			local aName = string.lower(a.name)
+			local bName = string.lower(b.name)
+			if aName ~= bName then
+				return aName < bName
+			end
+			return tostring(a.id) < tostring(b.id)
+		end)
 
-		return selectedCount
+		return matches
+	end
+
+	local function refreshKaliremTradeSelections()
+		-- Auto Paste Auto Trade only needs the live count here. Do not touch
+		-- tradeSelections because that table belongs to the manual Trading tab.
+		return #getKaliremTradeHouses()
 	end
 
 	queueKaliremHouses = function()
@@ -2255,36 +2268,59 @@ local function loadMain()
 	end
 
 	processAutoList = function()
-		if tradingRunning then return end
-		tradingRunning = true
+		-- Only one Auto Paste Auto Trade worker may exist at a time.
+		if autoTradeLoopRunning then return end
+
+		autoTradeLoopToken += 1
+		local myLoopToken = autoTradeLoopToken
+		autoTradeLoopRunning = true
+		autoTradeWaitingNoticeShown = false
 
 		task.spawn(function()
 			local function autoTradeStillEnabled()
-				return tradingRunning and autoListAfterPaste
+				return autoTradeLoopRunning
+					and autoListAfterPaste
+					and autoTradeLoopToken == myLoopToken
 			end
 
 			while autoTradeStillEnabled() do
-				-- Rebuild the selection before every trade. This makes Auto Trade
-				-- dynamic and guarantees that every currently owned Kalirem-named
-				-- house is included, including houses added/renamed during the run.
-				local selectedCount = refreshKaliremTradeSelections()
-				if selectedCount == 0 then
-					Rayfield:Notify({
-						Title = "Auto Trade",
-						Content = "All Kalirem houses have been traded ✅",
-						Duration = 4,
-					})
-					break
-				end
-
-				local entryId, entryName
-				for id, name in pairs(tradeSelections) do
-					entryId, entryName = id, name
-					break
-				end
-
-				if not entryId then
+				-- Never trade a target while Auto Paste is still editing houses.
+				-- Stay alive and begin/resume immediately after Auto Paste finishes.
+				if autoPasteRunning then
 					task.wait(0.5)
+					continue
+				end
+
+				-- IMPORTANT: rebuild from house_manager every pass. Never rely on the
+				-- old queue because Auto Paste/Auto Buy can create or rename houses
+				-- while this worker is already running.
+				local matches = getKaliremTradeHouses()
+
+				if #matches == 0 then
+					-- Do not kill the worker. Auto Paste may create another Kalirem
+					-- house a moment later. Keep watching until the toggle is turned off.
+					if not autoTradeWaitingNoticeShown then
+						autoTradeWaitingNoticeShown = true
+						Rayfield:Notify({
+							Title = "Auto Trade",
+							Content = "Waiting for a Kalirem house...",
+							Duration = 3,
+						})
+					end
+					task.wait(1)
+					continue
+				end
+
+				autoTradeWaitingNoticeShown = false
+				local entry = matches[1]
+				local entryId = entry.id
+				local entryName = entry.name
+
+				-- Verify the same house is still owned and still named Kalirem before
+				-- doing anything with it.
+				local currentHouse = getOwnedHouseById(entryId)
+				if not currentHouse or not isKaliremHouseName(currentHouse.name) then
+					task.wait(0.25)
 					continue
 				end
 
@@ -2294,84 +2330,95 @@ local function loadMain()
 					Duration = 3,
 				})
 
-				-- Keep retrying the spawn request while Auto Trade is enabled.
+				-- Retry SpawnHouse until it succeeds, the house disappears/gets renamed,
+				-- or Auto Trade is switched off.
 				local spawned = false
-				while autoTradeStillEnabled() and getOwnedHouseById(entryId) and not spawned do
-					spawned = pcall(function()
-						Router.get("HousingAPI/SpawnHouse"):FireServer(entryId)
-					end)
-					if not spawned then task.wait(1) end
-				end
-
-				if not autoTradeStillEnabled() then break end
-				if not getOwnedHouseById(entryId) then
-					-- It disappeared before listing; move on to the next Kalirem house.
-					continue
-				end
-
-				task.wait(5)
-
-				Rayfield:Notify({
-					Title = "Auto Trade",
-					Content = "Listing " .. entryName,
-					Duration = 3,
-				})
-
-				-- Keep retrying ListHouse until house_manager confirms the house is
-				-- actually listed. A successful pcall only means the client call did
-				-- not throw; it does not prove the server accepted the list request.
-				local listed = false
-				while autoTradeStillEnabled() and getOwnedHouseById(entryId) and not listed do
-					local currentHouse = getOwnedHouseById(entryId)
-					if currentHouse and currentHouse.listed_for_trade == true then
-						listed = true
+				while autoTradeStillEnabled() and not spawned do
+					currentHouse = getOwnedHouseById(entryId)
+					if not currentHouse or not isKaliremHouseName(currentHouse.name) then
 						break
 					end
 
-					pcall(function()
-						Router.get("HousingAPI/ListHouse"):InvokeServer(entryId)
+					spawned = pcall(function()
+						Router.get("HousingAPI/SpawnHouse"):FireServer(entryId)
 					end)
 
-					-- Give ClientData time to receive listed_for_trade from the server.
-					task.wait(1.5)
-					currentHouse = getOwnedHouseById(entryId)
-					listed = currentHouse ~= nil and currentHouse.listed_for_trade == true
+					if not spawned then
+						task.wait(1)
+					end
 				end
 
 				if not autoTradeStillEnabled() then break end
-				if not getOwnedHouseById(entryId) then
+
+				currentHouse = getOwnedHouseById(entryId)
+				if not currentHouse or not isKaliremHouseName(currentHouse.name) then
+					task.wait(0.25)
 					continue
 				end
 
-				if listed then
-					Rayfield:Notify({
-						Title = "Auto Trade",
-						Content = entryName .. " listed. Waiting until it is traded...",
-						Duration = 4,
-					})
+				-- Give the spawned house time to become the active house.
+				task.wait(4)
 
-					-- No timeout here. Stay on this house until it disappears from
-					-- house_manager, or until the user turns Auto Trade off.
-					local traded, reason = waitUntilHouseGone(entryId, nil, autoTradeStillEnabled)
-					if traded then
+				if not autoTradeStillEnabled() then break end
+				currentHouse = getOwnedHouseById(entryId)
+				if not currentHouse or not isKaliremHouseName(currentHouse.name) then
+					continue
+				end
+
+				Rayfield:Notify({
+					Title = "Auto Trade",
+					Content = "Listing " .. entryName .. " and waiting for trade...",
+					Duration = 4,
+				})
+
+				-- Keep the SAME Kalirem house listed until it leaves house_manager.
+				-- We intentionally do not depend on listed_for_trade because that field
+				-- is not reliable on every client version. Re-sending ListHouse every
+				-- few seconds also recovers from a silently rejected/late list request.
+				local lastListAttempt = 0
+				while autoTradeStillEnabled() do
+					currentHouse = getOwnedHouseById(entryId)
+					if not currentHouse then
 						Rayfield:Notify({
 							Title = "Auto Trade",
 							Content = entryName .. " traded ✔",
 							Duration = 3,
 						})
-					elseif reason == "cancelled" then
+						-- Update the visible owned-house dropdowns once per completed trade.
+						pcall(refreshOwnedHouses)
 						break
 					end
+
+					-- If something renamed this house away from Kalirem, stop handling
+					-- this one and immediately rescan the owned houses.
+					if not isKaliremHouseName(currentHouse.name) then
+						break
+					end
+
+					if tick() - lastListAttempt >= 4 then
+						lastListAttempt = tick()
+						pcall(function()
+							Router.get("HousingAPI/ListHouse"):InvokeServer(entryId)
+						end)
+					end
+
+					task.wait(0.5)
 				end
 
-				task.wait(1)
+				-- Immediately loop back and rescan. If another Kalirem house exists,
+				-- it becomes the next trade automatically.
+				task.wait(0.5)
 			end
 
-			tradingRunning = false
+			-- Do not let an old worker overwrite the state of a newer worker.
+			if autoTradeLoopToken == myLoopToken then
+				autoTradeLoopRunning = false
+				autoTradeWaitingNoticeShown = false
+			end
 		end)
 	end
 
- 
+
 
 	local autoTradeToggle
 	autoTradeToggle = AutoPasteTab:CreateToggle({
@@ -2379,39 +2426,33 @@ local function loadMain()
 		CurrentValue = false,
 		Callback = function(value)
 			autoListAfterPaste = value
+
 			if value then
-				if autoPasteRunning then
+				local selectedCount = queueKaliremHouses()
+
+				if selectedCount > 0 then
 					Rayfield:Notify({
 						Title = "Auto Trade",
-						Content = "Will list Kalirem houses when Auto Paste finishes",
+						Content = "Loop started - found " .. selectedCount .. " Kalirem house(s)",
 						Duration = 3,
 					})
 				else
-					local selectedCount = queueKaliremHouses()
-					if selectedCount == 0 then
-						pcall(function() autoTradeToggle:Set(false) end)
-						autoListAfterPaste = false
-						Rayfield:Notify({
-							Title = "Auto Trade",
-							Content = "No Kalirem houses found",
-							Duration = 3,
-						})
-						return
-					end
 					Rayfield:Notify({
 						Title = "Auto Trade",
-						Content = "Listing " .. selectedCount .. " Kalirem house(s)",
+						Content = "Loop started - waiting for a Kalirem house",
 						Duration = 3,
 					})
-					processAutoList()
 				end
+
+				-- Start now even while Auto Paste is still running. The worker will
+				-- continuously detect Kalirem houses as they appear.
+				processAutoList()
 			else
-				tradingRunning = false
-				table.clear(tradeSelections)
-				lastTradeCount = 0
-				pcall(function()
-					if tradeDropdown then tradeDropdown:Set({}) end
-				end)
+				-- Stop only the Auto Paste Auto Trade worker. Invalidate the current
+				-- token too, so a quick OFF -> ON cannot revive the old task.
+				autoTradeLoopToken += 1
+				autoTradeLoopRunning = false
+				autoTradeWaitingNoticeShown = false
 			end
 		end,
 	})
@@ -2612,46 +2653,126 @@ local function loadMain()
 	local max_retries = 3
 
 	local function applyRequestedOutfits(requests)
-		if type(requests) ~= "table" then return end
+		if type(requests) ~= "table" then return true end
 
-		local success, interior = pcall(function()
-			return cd.get("house_interior")
-		end)
-		if not success or not interior or not interior.furniture then return end
-
-		local usedFurniture = {}
+		-- Outfit data is not applied by BuyFurnitures itself. We must wait for the
+		-- newly-created furniture to appear in house_interior, match each request to
+		-- its mannequin, then use the normal mannequin edit/save flow.
+		local outfitRequests = {}
 		for _, request in ipairs(requests) do
 			local properties = request.properties or {}
-			if properties.outfit then
-				local matchedId
-				local closestDistance = math.huge
-				for furnitureId, furniture in pairs(interior.furniture) do
-					if not usedFurniture[furnitureId] and furniture.id == request.kind then
-						local distance = math.huge
-						if typeof(furniture.cframe) == "CFrame" and typeof(properties.cframe) == "CFrame" then
-							distance = (furniture.cframe.Position - properties.cframe.Position).Magnitude
-						end
-						if distance < closestDistance then
-							closestDistance = distance
-							matchedId = furnitureId
+			if properties.outfit ~= nil then
+				table.insert(outfitRequests, request)
+			end
+		end
+		if #outfitRequests == 0 then return true end
+
+		local character = plr.Character
+		if not character then
+			local ok, result = pcall(function()
+				return plr.CharacterAdded:Wait()
+			end)
+			if ok then character = result end
+		end
+
+		local usedFurniture = {}
+		local applied = 0
+
+		for requestIndex, request in ipairs(outfitRequests) do
+			if stopFlag then return false end
+
+			local properties = request.properties or {}
+			local matchedId = nil
+			local matchedDistance = math.huge
+
+			-- ClientData can lag behind BuyFurnitures for a moment. Retry the lookup
+			-- instead of doing a single scan and silently skipping the outfit.
+			local lookupStarted = tick()
+			repeat
+				local success, interior = pcall(function()
+					return cd.get("house_interior")
+				end)
+
+				if success and interior and interior.furniture then
+					local fallbackId = nil
+					for furnitureId, furniture in pairs(interior.furniture) do
+						if not usedFurniture[furnitureId] and furniture.id == request.kind then
+							fallbackId = fallbackId or furnitureId
+							local distance = math.huge
+							if typeof(furniture.cframe) == "CFrame" and typeof(properties.cframe) == "CFrame" then
+								distance = (furniture.cframe.Position - properties.cframe.Position).Magnitude
+							end
+							if distance < matchedDistance then
+								matchedDistance = distance
+								matchedId = furnitureId
+							end
 						end
 					end
+
+					-- If CFrames are unavailable/different after server normalization, still
+					-- use an unused furniture instance of the exact same kind.
+					if not matchedId then matchedId = fallbackId end
 				end
-				if matchedId and closestDistance <= 0.5 then
-					usedFurniture[matchedId] = true
-					pcall(function()
-						router.get("AvatarAPI/StartEditingMannequin"):InvokeServer(properties.outfit)
-						router.get("HousingAPI/ActivateFurniture"):InvokeServer(
-							plr,
-							matchedId,
-							"UseBlock",
-							{ save_outfit = true, outfit_name = properties.outfit_name or "Outfit" },
-							plr.Character
-						)
+
+				if not matchedId then task.wait(0.25) end
+			until matchedId or tick() - lookupStarted >= 5
+
+			if not matchedId then
+				warn("[Cubix Outfit] Could not find pasted mannequin for", request.kind, "request", requestIndex)
+			else
+				usedFurniture[matchedId] = true
+				local saved = false
+				local lastErr = nil
+
+				for attempt = 1, 3 do
+					if stopFlag then return false end
+
+					local editOk, editResult = pcall(function()
+						return router.get("AvatarAPI/StartEditingMannequin"):InvokeServer(properties.outfit)
 					end)
+					if not editOk then
+						lastErr = "StartEditingMannequin: " .. tostring(editResult)
+					else
+						-- Give the edit state a moment to reach the server before saving it to
+						-- the furniture. Calling both remotes back-to-back was unreliable.
+						task.wait(0.2)
+						local saveOk, saveResult = pcall(function()
+							return router.get("HousingAPI/ActivateFurniture"):InvokeServer(
+								plr,
+								matchedId,
+								"UseBlock",
+								{ save_outfit = true, outfit_name = properties.outfit_name or "Outfit" },
+								character or plr.Character
+							)
+						end)
+						if saveOk then
+							saved = true
+							break
+						else
+							lastErr = "ActivateFurniture: " .. tostring(saveResult)
+						end
+					end
+
+					task.wait(0.35)
+				end
+
+				if saved then
+					applied += 1
+				else
+					warn("[Cubix Outfit] Failed to apply outfit to", request.kind, "-", tostring(lastErr))
 				end
 			end
 		end
+
+		if applied < #outfitRequests then
+			Rayfield:Notify({
+				Title = "Outfits",
+				Content = "Applied " .. applied .. "/" .. #outfitRequests .. " mannequin outfit(s). Check console for failed ones.",
+				Duration = 5,
+			})
+		end
+
+		return applied == #outfitRequests
 	end
 
 	local function placeFurnitures(furnList, isFix)
@@ -2910,11 +3031,6 @@ local function loadMain()
 					pcall(function()
 						router.get("HousingAPI/ActivateFurniture"):InvokeServer(plr, i, "UseBlock", v.text, plr.Character)
 					end)
-				elseif v.outfit_name or v.outfit then
-					pcall(function()
-						router.get("AvatarAPI/StartEditingMannequin"):InvokeServer(v.outfit)
-						router.get("HousingAPI/ActivateFurniture"):InvokeServer(plr, i, "UseBlock", { save_outfit = true, outfit_name = v.outfit_name or "Outfit" }, plr.Character)
-					end)
 				end
 			end
 		end
@@ -3074,11 +3190,6 @@ local function loadMain()
 					pcall(function()
 						router.get("HousingAPI/ActivateFurniture"):InvokeServer(plr, i, "UseBlock", v.text, plr.Character)
 					end)
-				elseif v.outfit_name or v.outfit then
-					pcall(function()
-						router.get("AvatarAPI/StartEditingMannequin"):InvokeServer(v.outfit)
-						router.get("HousingAPI/ActivateFurniture"):InvokeServer(plr, i, "UseBlock", { save_outfit = true, outfit_name = v.outfit_name or "Outfit" }, plr.Character)
-					end)
 				end
 			end
 		end
@@ -3235,11 +3346,6 @@ local function loadMain()
 				if v.text then
 					pcall(function()
 						router.get("HousingAPI/ActivateFurniture"):InvokeServer(plr, i, "UseBlock", v.text, plr.Character)
-					end)
-				elseif v.outfit_name or v.outfit then
-					pcall(function()
-						router.get("AvatarAPI/StartEditingMannequin"):InvokeServer(v.outfit)
-						router.get("HousingAPI/ActivateFurniture"):InvokeServer(plr, i, "UseBlock", { save_outfit = true, outfit_name = v.outfit_name or "Outfit" }, plr.Character)
 					end)
 				end
 			end
