@@ -2213,6 +2213,7 @@ local function loadMain()
 	local autoTradeLoopRunning = false
 	local autoTradeLoopToken = 0
 	local autoTradeWaitingNoticeShown = false
+	local autoTradeToggle -- forward declaration so the worker can switch the UI toggle off
 
 	local function getKaliremTradeHouses()
 		-- Poll ClientData directly. Do not call refreshOwnedHouses() every second;
@@ -2277,6 +2278,8 @@ local function loadMain()
 		autoTradeWaitingNoticeShown = false
 
 		task.spawn(function()
+			local tradedAnyThisRun = false
+
 			local function autoTradeStillEnabled()
 				return autoTradeLoopRunning
 					and autoListAfterPaste
@@ -2297,8 +2300,27 @@ local function loadMain()
 				local matches = getKaliremTradeHouses()
 
 				if #matches == 0 then
-					-- Do not kill the worker. Auto Paste may create another Kalirem
-					-- house a moment later. Keep watching until the toggle is turned off.
+					-- Once at least one Kalirem house was successfully traded and none
+					-- remain, automatically turn Auto Trade OFF instead of waiting forever.
+					if tradedAnyThisRun then
+						Rayfield:Notify({
+							Title = "Auto Trade",
+							Content = "All Kalirem houses were traded - Auto Trade disabled",
+							Duration = 4,
+						})
+
+						if autoTradeToggle then
+							pcall(function() autoTradeToggle:Set(false) end)
+						else
+							autoListAfterPaste = false
+							autoTradeLoopToken += 1
+							autoTradeLoopRunning = false
+						end
+						break
+					end
+
+					-- If Auto Trade was enabled before any Kalirem house exists, keep
+					-- waiting so Auto Paste/Auto Buy can still create one later.
 					if not autoTradeWaitingNoticeShown then
 						autoTradeWaitingNoticeShown = true
 						Rayfield:Notify({
@@ -2379,6 +2401,7 @@ local function loadMain()
 				while autoTradeStillEnabled() do
 					currentHouse = getOwnedHouseById(entryId)
 					if not currentHouse then
+						tradedAnyThisRun = true
 						Rayfield:Notify({
 							Title = "Auto Trade",
 							Content = entryName .. " traded ✔",
@@ -2420,7 +2443,6 @@ local function loadMain()
 
 
 
-	local autoTradeToggle
 	autoTradeToggle = AutoPasteTab:CreateToggle({
 		Name = "Auto Trade",
 		CurrentValue = false,
