@@ -607,12 +607,32 @@ local function loadMain()
 			else telegramNote("Multiple chats found. Enter your own Chat ID manually: " .. table.concat(ids, ", "):sub(1, 180)) end
 		end)
 	end })
+	local function telegramEscapeHtml(value)
+		return tostring(value or "")
+			:gsub("&", "&amp;")
+			:gsub("<", "&lt;")
+			:gsub(">", "&gt;")
+	end
+
 	Telegram:CreateButton({ Name = "Send test notification", Callback = function()
 		if testBusy or not telegramSettingsValid(true) then return end
 		testBusy = true
 		local token, chat = telegramToken, telegramChat
 		task.spawn(function()
-			local sent, err = telegramRequest(token, "sendMessage", { chat_id = chat, text = "Cubix test: Telegram notifications are connected. This is a test, not a saved house." })
+			local testMessage = table.concat({
+				"🏠 <b>Cubix House Scanner</b>",
+				"━━━━━━━━━━━━━━━━━━",
+				"✅ <b>Telegram connected</b>",
+				"This is a test notification.",
+				"",
+				"<i>Auto-saved houses that pass your filters will appear in this format.</i>",
+			}, "\n")
+			local sent, err = telegramRequest(token, "sendMessage", {
+				chat_id = chat,
+				text = testMessage,
+				parse_mode = "HTML",
+				disable_web_page_preview = true,
+			})
 			testBusy = false
 			telegramNote(sent and "Test message sent" or (err or "Test failed"))
 		end)
@@ -636,14 +656,43 @@ local function loadMain()
 		if not telegramSettingsValid(true) then return end
 		local token, chat = telegramToken, telegramChat
 		local filename = path:match("([^/]+)$") or path
-		local message = "Cubix: house saved\nFile: " .. filename .. "\nHouse type: " .. houseType
-			.. "\nEstimated build cost: " .. tostring(cost) .. "\nPlayer: " .. playerName
-			.. "\nSaved to: " .. path .. "\nCost includes furniture + textures, not the house price."
-		if unknownCosts > 0 then message = message .. "\nSome item prices are unknown; this total includes known prices only." end
+		local roundedCost = math.floor((tonumber(cost) or 0) + 0.5)
+		local warning = ""
+		if unknownCosts > 0 then
+			warning = "\n⚠️ <b>Price warning:</b> " .. tostring(unknownCosts) .. " item(s) have unknown prices, so the total only includes known prices."
+		end
+
+		-- Telegram has no Discord-style embeds, so this uses HTML formatting to create an embed-like card.
+		local message = table.concat({
+			"🏠 <b>Cubix • House Saved</b>",
+			"━━━━━━━━━━━━━━━━━━",
+			"👤 <b>Player</b>",
+			telegramEscapeHtml(playerName),
+			"",
+			"🏡 <b>House Type</b>",
+			telegramEscapeHtml(houseType),
+			"",
+			"💵 <b>Estimated Build Cost</b>",
+			"$" .. tostring(roundedCost),
+			"",
+			"📄 <b>File</b>",
+			"<code>" .. telegramEscapeHtml(filename) .. "</code>",
+			"",
+			"📁 <b>Saved To</b>",
+			"<code>" .. telegramEscapeHtml(path) .. "</code>",
+			"",
+			"<i>Cost includes furniture + textures and does not include the house purchase price.</i>",
+		}, "\n") .. warning
+
 		-- Run separately: a Telegram failure must never fail or repeat a house save.
 		task.spawn(function()
 			if not telegramEnabled or token ~= telegramToken or chat ~= telegramChat then return end
-			local sent, err = telegramRequest(token, "sendMessage", { chat_id = chat, text = message })
+			local sent, err = telegramRequest(token, "sendMessage", {
+				chat_id = chat,
+				text = message,
+				parse_mode = "HTML",
+				disable_web_page_preview = true,
+			})
 			telegramNote(sent and ("Notification sent: " .. filename) or ("House saved; " .. (err or "notification failed")))
 		end)
 	end
@@ -654,12 +703,68 @@ local function loadMain()
 	local autoScanFilesPath = "HouseFS/autoscan"
 	local autoRunning, autoStop = false, false
 	local autoMode, autoPlayer = "Everyone in server", plr.Name
-	local typeFilter, minCostText, maxCostText = "", "", ""
+	local selectedHouseTypes, minCostText, maxCostText, minFurnitureText = {}, "", "", ""
 	local includeDetails, skipEmpty = true, true
 	local settleSeconds = 5
+	local autoScanSettingsPath = "HouseFS/settings/autoscan.json"
+	local autoScanSettingsReady = false
+
+	local function saveAutoScanSettings()
+		if not autoScanSettingsReady then return false end
+		local ok = pcall(function()
+			if type(isfolder) ~= "function" or type(makefolder) ~= "function" or type(writefile) ~= "function" then
+				error("File saving unavailable")
+			end
+			if not isfolder("HouseFS") then makefolder("HouseFS") end
+			if not isfolder("HouseFS/settings") then makefolder("HouseFS/settings") end
+			writefile(autoScanSettingsPath, HttpService:JSONEncode({
+				version = 1,
+				min_cost = minCostText,
+				max_cost = maxCostText,
+				min_furniture = minFurnitureText,
+			}))
+		end)
+		return ok
+	end
+
+	local function loadAutoScanSettings()
+		if type(isfile) ~= "function" or type(readfile) ~= "function" then return end
+		local existsOk, exists = pcall(isfile, autoScanSettingsPath)
+		if not existsOk or not exists then return end
+		local ok, config = pcall(function()
+			return HttpService:JSONDecode(readfile(autoScanSettingsPath))
+		end)
+		if not ok or type(config) ~= "table" or config.version ~= 1 then return end
+		if type(config.min_cost) == "string" then minCostText = config.min_cost end
+		if type(config.max_cost) == "string" then maxCostText = config.max_cost end
+		if type(config.min_furniture) == "string" then minFurnitureText = config.min_furniture end
+	end
+
+	loadAutoScanSettings()
 	local houseDB = {}
 	pcall(function() houseDB = require(ReplicatedStorage.ClientDB.Housing.HouseDB) end)
 	local function trim(value) return tostring(value or ""):match("^%s*(.-)%s*$") end
+
+	-- Build a friendly multi-select list from HouseDB while preserving the real building_type id.
+	local houseTypeOptions, houseTypeOptionToId = {}, {}
+	for id, entry in pairs(houseDB) do
+		if type(id) == "string" then
+			local displayName = type(entry) == "table" and tostring(entry.name or id) or id
+			local option = displayName .. " [" .. id .. "]"
+			table.insert(houseTypeOptions, option)
+			houseTypeOptionToId[option] = id
+		end
+	end
+	table.sort(houseTypeOptions, function(a, b) return a:lower() < b:lower() end)
+
+	local function setSelectedHouseTypes(value)
+		selectedHouseTypes = {}
+		if type(value) ~= "table" then return end
+		for _, option in ipairs(value) do
+			local id = houseTypeOptionToId[option] or option
+			if type(id) == "string" and id ~= "" then selectedHouseTypes[id] = true end
+		end
+	end
 	local function playerNames()
 		local names = {}
 		for _, player in ipairs(Players:GetPlayers()) do table.insert(names, player.Name) end
@@ -676,17 +781,232 @@ local function loadMain()
 		if autoPlayer and Players:FindFirstChild(autoPlayer) then playerDropdown:Set({ autoPlayer }) end
 	end })
 	AutoScan:CreateSection("Optional filters")
-	AutoScan:CreateInput({ Name = "House type or name (blank = any)", PlaceholderText = "bunker_house or exact house name", RemoveTextAfterFocusLost = false,
-		Callback = function(value) typeFilter = trim(value):lower() end })
-	AutoScan:CreateInput({ Name = "Minimum build cost (blank = no minimum)", PlaceholderText = "10000", RemoveTextAfterFocusLost = false,
-		Callback = function(value) minCostText = trim(value) end })
-	AutoScan:CreateInput({ Name = "Maximum build cost (blank = no maximum)", PlaceholderText = "100000", RemoveTextAfterFocusLost = false,
-		Callback = function(value) maxCostText = trim(value) end })
+	local houseTypeDropdown = AutoScan:CreateDropdown({
+		Name = "House types (none selected = any)",
+		Options = houseTypeOptions,
+		CurrentOption = {},
+		MultipleOptions = true,
+		Callback = function(value)
+			setSelectedHouseTypes(value)
+		end,
+	})
+	AutoScan:CreateButton({ Name = "Clear house type selection", Callback = function()
+		selectedHouseTypes = {}
+		pcall(function() houseTypeDropdown:Set({}) end)
+	end })
+	AutoScan:CreateInput({ Name = "Minimum build cost (blank = no minimum)", PlaceholderText = "10000", CurrentValue = minCostText, RemoveTextAfterFocusLost = false,
+		Callback = function(value) minCostText = trim(value); saveAutoScanSettings() end })
+	AutoScan:CreateInput({ Name = "Maximum build cost (blank = no maximum)", PlaceholderText = "100000", CurrentValue = maxCostText, RemoveTextAfterFocusLost = false,
+		Callback = function(value) maxCostText = trim(value); saveAutoScanSettings() end })
+	AutoScan:CreateInput({ Name = "Minimum furniture count (blank/0 = no minimum)", PlaceholderText = "150", CurrentValue = minFurnitureText, RemoveTextAfterFocusLost = false,
+		Callback = function(value) minFurnitureText = trim(value); saveAutoScanSettings() end })
+	autoScanSettingsReady = true
 	AutoScan:CreateToggle({ Name = "Skip empty houses", CurrentValue = true, Callback = function(value) skipEmpty = value end })
 	AutoScan:CreateToggle({ Name = "Include house type and cost in filename", CurrentValue = true, Callback = function(value) includeDetails = value end })
 	AutoScan:CreateInput({ Name = "Stable-data wait (seconds)", PlaceholderText = "5", RemoveTextAfterFocusLost = false,
 		Callback = function(value) settleSeconds = math.clamp(tonumber(value) or 5, 3, 20) end })
 	local autoStatus = AutoScan:CreateLabel("Idle", "activity")
+
+	-- Saved auto-scan files browser + preview / delete / favorites manager.
+	AutoScan:CreateSection("Saved files")
+	local selectedSavedFile = nil
+	local favoritesPath = "HouseFS/favorites"
+	local savedFileStatus = AutoScan:CreateLabel("Selected file: -", "file-json")
+	local savedPreviewType = AutoScan:CreateLabel("House type: -", "home")
+	local savedPreviewCost = AutoScan:CreateLabel("Build cost: -", "dollar-sign")
+	local savedPreviewFurniture = AutoScan:CreateLabel("Furniture: -", "armchair")
+	local savedPreviewTextures = AutoScan:CreateLabel("Textures: -", "grid-2x2")
+	local savedPreviewPlayer = AutoScan:CreateLabel("Player: -", "user")
+	local savedPreviewQuality = AutoScan:CreateLabel("Quality: -", "sparkles")
+
+	local function resetSavedPreview()
+		pcall(function() savedPreviewType:Set("House type: -") end)
+		pcall(function() savedPreviewCost:Set("Build cost: -") end)
+		pcall(function() savedPreviewFurniture:Set("Furniture: -") end)
+		pcall(function() savedPreviewTextures:Set("Textures: -") end)
+		pcall(function() savedPreviewPlayer:Set("Player: -") end)
+		pcall(function() savedPreviewQuality:Set("Quality: -") end)
+	end
+
+	local function getSavedAutoScanFiles()
+		local names = {}
+		if type(listfiles) ~= "function" or type(isfolder) ~= "function" then
+			return { "File listing unavailable" }
+		end
+		local folderOk, folderExists = pcall(isfolder, autoScanFilesPath)
+		if not folderOk or not folderExists then
+			return { "No saved files" }
+		end
+		local ok, files = pcall(listfiles, autoScanFilesPath)
+		if not ok or type(files) ~= "table" then
+			return { "File listing unavailable" }
+		end
+		for _, path in ipairs(files) do
+			local normalized = tostring(path):gsub("\\", "/")
+			local name = normalized:match("([^/]+)$") or normalized
+			if name:lower():sub(-5) == ".json" then
+				table.insert(names, name)
+			end
+		end
+		table.sort(names, function(a, b) return a:lower() < b:lower() end)
+		if #names == 0 then return { "No saved files" } end
+		return names
+	end
+
+	local function estimateQuality(cost, furnitureCount, textureCount)
+		cost = tonumber(cost) or 0
+		furnitureCount = tonumber(furnitureCount) or 0
+		textureCount = tonumber(textureCount) or 0
+		if cost >= 100000 and furnitureCount >= 300 then return "Very Detailed" end
+		if cost >= 70000 and furnitureCount >= 200 then return "Detailed" end
+		if cost >= 50000 and furnitureCount >= 150 then return "Good Build" end
+		if cost >= 30000 and furnitureCount >= 80 then return "Moderate" end
+		if furnitureCount >= 150 and textureCount >= 8 then return "Decor-heavy" end
+		return "Light Build"
+	end
+
+	local function escapeLuaPattern(value)
+		return tostring(value or ""):gsub("([%^%$%(%)%%%.%[%]%*%+%-%?])", "%%%1")
+	end
+
+	local function extractPlayerFromSavedName(name, buildingType)
+		-- Auto-save names begin with the player's username. Use the exact saved building type
+		-- as the delimiter so house IDs containing underscores do not break parsing.
+		local base = tostring(name or ""):gsub("%.json$", "")
+		if buildingType and tostring(buildingType) ~= "" then
+			local marker = "_" .. escapeLuaPattern(buildingType) .. "_cost%d+_"
+			local playerPart = base:match("^(.-)" .. marker)
+			if playerPart and playerPart ~= "" then return playerPart end
+		end
+		return base:match("^(.-)_%d%d%d%d%d%d%d%d_%d%d%d%d%d%d_") or "Unknown"
+	end
+
+	local function previewSavedFile(name)
+		if not name then resetSavedPreview(); return end
+		if type(readfile) ~= "function" then
+			resetSavedPreview()
+			pcall(function() savedPreviewType:Set("Preview unavailable: readfile unsupported") end)
+			return
+		end
+		local path = autoScanFilesPath .. "/" .. name
+		local ok, data = pcall(function()
+			return HttpService:JSONDecode(readfile(path))
+		end)
+		if not ok or type(data) ~= "table" then
+			resetSavedPreview()
+			pcall(function() savedPreviewType:Set("Preview unavailable: invalid JSON") end)
+			return
+		end
+		local furnitureCount = tonumber(data.furniture_quantity) or countfurnitures(data.furniture)
+		local textureCount = counttextures(data.textures)
+		local cost = tonumber(data.total_cost) or 0
+		local houseType = tostring(data.building_type or "Unknown")
+		local entry = houseDB[data.building_type]
+		local display = type(entry) == "table" and tostring(entry.name or houseType) or houseType
+		local playerName = extractPlayerFromSavedName(name, data.building_type)
+		local quality = estimateQuality(cost, furnitureCount, textureCount)
+		pcall(function() savedPreviewType:Set("House type: " .. display .. " [" .. houseType .. "]") end)
+		pcall(function() savedPreviewCost:Set("Build cost: $" .. math.floor(cost)) end)
+		pcall(function() savedPreviewFurniture:Set("Furniture: " .. furnitureCount) end)
+		pcall(function() savedPreviewTextures:Set("Textures: " .. textureCount) end)
+		pcall(function() savedPreviewPlayer:Set("Player: " .. playerName) end)
+		pcall(function() savedPreviewQuality:Set("Quality: " .. quality) end)
+	end
+
+	local savedFilesDropdown
+	local function refreshSavedFiles(keepSelection)
+		local options = getSavedAutoScanFiles()
+		pcall(function() savedFilesDropdown:Refresh(options, true) end)
+		if keepSelection and selectedSavedFile then
+			for _, name in ipairs(options) do
+				if name == selectedSavedFile then
+					pcall(function() savedFilesDropdown:Set({ selectedSavedFile }) end)
+					previewSavedFile(selectedSavedFile)
+					return
+				end
+			end
+		end
+		selectedSavedFile = nil
+		pcall(function() savedFileStatus:Set("Selected file: -") end)
+		resetSavedPreview()
+	end
+
+	savedFilesDropdown = AutoScan:CreateDropdown({
+		Name = "View saved files",
+		Options = getSavedAutoScanFiles(),
+		CurrentOption = {},
+		MultipleOptions = false,
+		Callback = function(value)
+			local name = type(value) == "table" and value[1] or value
+			if name == "No saved files" or name == "File listing unavailable" or name == nil then
+				selectedSavedFile = nil
+				pcall(function() savedFileStatus:Set("Selected file: -") end)
+				resetSavedPreview()
+				return
+			end
+			selectedSavedFile = tostring(name)
+			pcall(function() savedFileStatus:Set("Selected file: " .. selectedSavedFile) end)
+			previewSavedFile(selectedSavedFile)
+		end,
+	})
+
+	AutoScan:CreateButton({ Name = "Refresh saved files", Callback = function()
+		refreshSavedFiles(true)
+	end })
+
+	AutoScan:CreateButton({ Name = "Copy selected file path", Callback = function()
+		if not selectedSavedFile then
+			return Rayfield:Notify({ Title = "Saved Files", Content = "Select a saved file first.", Duration = 3 })
+		end
+		local path = autoScanFilesPath .. "/" .. selectedSavedFile
+		if type(setclipboard) == "function" then
+			local ok = pcall(setclipboard, path)
+			if ok then return Rayfield:Notify({ Title = "Saved Files", Content = "File path copied: " .. selectedSavedFile, Duration = 3 }) end
+		end
+		Rayfield:Notify({ Title = "Saved Files", Content = path, Duration = 5 })
+	end })
+
+	AutoScan:CreateButton({ Name = "Favorite selected file", Callback = function()
+		if not selectedSavedFile then
+			return Rayfield:Notify({ Title = "Favorites", Content = "Select a saved file first.", Duration = 3 })
+		end
+		if type(readfile) ~= "function" or type(writefile) ~= "function" or type(isfolder) ~= "function" or type(makefolder) ~= "function" then
+			return Rayfield:Notify({ Title = "Favorites", Content = "Your executor does not support the required file functions.", Duration = 5 })
+		end
+		local srcPath = autoScanFilesPath .. "/" .. selectedSavedFile
+		local destPath = favoritesPath .. "/" .. selectedSavedFile
+		local ok, err = pcall(function()
+			if not isfolder("HouseFS") then makefolder("HouseFS") end
+			if not isfolder(favoritesPath) then makefolder(favoritesPath) end
+			local content = readfile(srcPath)
+			writefile(destPath, content)
+		end)
+		if not ok then
+			return Rayfield:Notify({ Title = "Favorites", Content = "Could not favorite file: " .. tostring(err):sub(1, 100), Duration = 5 })
+		end
+		Rayfield:Notify({ Title = "Favorites", Content = "Saved to HouseFS/favorites: " .. selectedSavedFile, Duration = 4, Image = "heart" })
+	end })
+
+	AutoScan:CreateButton({ Name = "Delete selected saved file", Callback = function()
+		if not selectedSavedFile then
+			return Rayfield:Notify({ Title = "Saved Files", Content = "Select a saved file first.", Duration = 3 })
+		end
+		if type(delfile) ~= "function" then
+			return Rayfield:Notify({ Title = "Saved Files", Content = "Your executor does not support deleting files.", Duration = 4 })
+		end
+		local deleting = selectedSavedFile
+		local path = autoScanFilesPath .. "/" .. deleting
+		local ok, err = pcall(delfile, path)
+		if not ok then
+			return Rayfield:Notify({ Title = "Saved Files", Content = "Delete failed: " .. tostring(err):sub(1, 100), Duration = 5 })
+		end
+		selectedSavedFile = nil
+		refreshSavedFiles(false)
+		Rayfield:Notify({ Title = "Saved Files", Content = "Deleted: " .. deleting, Duration = 4, Image = "trash-2" })
+	end })
+
+
+	--========================================================
 	local function autoMessage(message)
 		pcall(function() autoStatus:Set(message) end)
 		updatestatus(message)
@@ -771,6 +1091,8 @@ local function loadMain()
 		local path = autoScanFilesPath .. "/" .. base .. "_" .. suffix .. ".json"
 		if autoStop then return nil end
 		writefile(path, encoded)
+		-- Keep the saved-files dropdown current after every successful auto-save.
+		task.defer(function() refreshSavedFiles(true) end)
 		return path
 	end
 	AutoScan:CreateButton({ Name = "Stop Auto Scan", Callback = function()
@@ -781,10 +1103,15 @@ local function loadMain()
 		if autoRunning then return end
 		local minCost = minCostText ~= "" and tonumber(minCostText) or nil
 		local maxCost = maxCostText ~= "" and tonumber(maxCostText) or nil
+		local minFurniture = minFurnitureText ~= "" and tonumber(minFurnitureText) or nil
 		if (minCostText ~= "" and (not minCost or minCost < 0)) or (maxCostText ~= "" and (not maxCost or maxCost < 0))
 			or (minCost and maxCost and minCost > maxCost) then
 			return Rayfield:Notify({ Title = "Filters", Content = "Enter valid nonnegative costs; minimum must not exceed maximum.", Duration = 5 })
 		end
+		if minFurnitureText ~= "" and (not minFurniture or minFurniture < 0 or minFurniture % 1 ~= 0) then
+			return Rayfield:Notify({ Title = "Filters", Content = "Minimum furniture count must be a whole number of 0 or higher.", Duration = 5 })
+		end
+		if minFurniture == 0 then minFurniture = nil end
 		local targets = {}
 		if autoMode == "Everyone in server" then
 			targets = Players:GetPlayers()
@@ -794,7 +1121,8 @@ local function loadMain()
 			if target then table.insert(targets, target) end
 		end
 		if #targets == 0 then return Rayfield:Notify({ Title = "Auto Scan", Content = "Select a player who is still in this server.", Duration = 5 }) end
-		local wantedType, details, ignoreEmpty, stableWait = typeFilter, includeDetails, skipEmpty, settleSeconds
+		local wantedTypes, details, ignoreEmpty, stableWait = {}, includeDetails, skipEmpty, settleSeconds
+		for id in pairs(selectedHouseTypes) do wantedTypes[id] = true end
 		autoRunning, autoStop = true, false
 		task.spawn(function()
 			local saved, skipped, failed = 0, 0, 0
@@ -818,12 +1146,14 @@ local function loadMain()
 						if autoStop then return "stopped" end
 						if not snapshot then return "failed", loadErr end
 						local fc, tc, unknown = costInfo(snapshot)
+						local furnitureCount = countfurnitures(snapshot.furniture)
 						local kind = tostring(snapshot.building_type)
 						local entry = houseDB[snapshot.building_type]
 						local display = type(entry) == "table" and tostring(entry.name or kind) or kind
-						setscaninfo(countfurnitures(snapshot.furniture), fc, counttextures(snapshot.textures), tc, snapshot.ambiance and "Yes" or "No", kind)
-						if wantedType ~= "" and kind:lower() ~= wantedType and display:lower() ~= wantedType then return "skipped", "House type filter" end
-						if ignoreEmpty and countfurnitures(snapshot.furniture) == 0 then return "skipped", "Empty house" end
+						setscaninfo(furnitureCount, fc, counttextures(snapshot.textures), tc, snapshot.ambiance and "Yes" or "No", kind)
+						if next(wantedTypes) ~= nil and not wantedTypes[kind] then return "skipped", "House type filter" end
+						if ignoreEmpty and furnitureCount == 0 then return "skipped", "Empty house" end
+						if minFurniture and furnitureCount < minFurniture then return "skipped", "Furniture count " .. furnitureCount .. " < " .. minFurniture end
 						if (minCost or maxCost) and unknown > 0 then return "skipped", "Cost unknown for some items" end
 						if (minCost and fc + tc < minCost) or (maxCost and fc + tc > maxCost) then return "skipped", "Cost filter" end
 						local path = saveAutoSnapshot(snapshot, player, details, fc, tc)
