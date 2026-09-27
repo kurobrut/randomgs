@@ -1410,6 +1410,70 @@ local function loadMain()
 		return getInteriorExactType(interior)
 	end
 
+	-- Wait until the CURRENT house has completely settled before leaving it.
+	-- This prevents Auto Paste from entering the next house while late furniture/
+	-- texture updates from the previous paste are still arriving.
+	local function waitForCurrentPasteToFinish(houseId, quietTime, timeout)
+		quietTime = quietTime or 2.5
+		timeout = timeout or 25
+
+		local started = tick()
+		local stableSince = nil
+		local lastSignature = nil
+
+		local function makeSignature(interior)
+			local furnitureCount = 0
+			for _ in pairs(interior.furniture or {}) do
+				furnitureCount += 1
+			end
+
+			local textureParts = {}
+			for roomId, textureData in pairs(interior.textures or {}) do
+				table.insert(textureParts,
+					tostring(roomId) .. ":" ..
+					tostring(textureData.floors or "") .. ":" ..
+					tostring(textureData.walls or "")
+				)
+			end
+			table.sort(textureParts)
+
+			return tostring(furnitureCount) .. "|" .. table.concat(textureParts, ";")
+		end
+
+		while tick() - started < timeout do
+			if stopFlag or not autoPasteRunning then
+				return false, "Stopped"
+			end
+
+			local ok, interior = pcall(function()
+				return cd.get("house_interior")
+			end)
+
+			if ok and interior and interior.house_id == houseId then
+				local signature = makeSignature(interior)
+
+				if signature == lastSignature then
+					if not stableSince then
+						stableSince = tick()
+					elseif tick() - stableSince >= quietTime then
+						return true
+					end
+				else
+					lastSignature = signature
+					stableSince = tick()
+				end
+			else
+				-- Never treat a different/missing house as "finished".
+				stableSince = nil
+				lastSignature = nil
+			end
+
+			task.wait(0.25)
+		end
+
+		return false, "Timed out waiting for the paste to settle"
+	end
+
 	local function pasteIntoHouse(houseId, houseName, houseData, mode, expectedType)
 		local spawnOk, spawnErr = pcall(function()
 			router.get("HousingAPI/SpawnHouse"):FireServer(houseId)
@@ -1479,9 +1543,31 @@ local function loadMain()
 			return false
 		end
 
+		-- HARD GATE: do not leave / start the next house until this house is stable.
+		setAPStatus("Waiting for paste to finish")
+		local settled, settleErr = waitForCurrentPasteToFinish(houseId, 2.5, 25)
+		if not settled then
+			if stopFlag or not autoPasteRunning then
+				exitCurrentHouse()
+				return false
+			end
+
+			Rayfield:Notify({
+				Title = "Auto Paste",
+				Content = houseName .. " did not finish settling: " .. tostring(settleErr) .. ". Staying on this queue item.",
+				Duration = 6,
+			})
+			exitCurrentHouse()
+			return false
+		end
+
+		setAPStatus("Finishing " .. houseName)
+		task.wait(0.75) -- small final buffer after the stable-state confirmation
+
 		exitCurrentHouse()
 		task.wait(2)
 		deselectAutoPasteTarget(houseId)
+		setAPStatus("Running")
 		return true
 	end
 
