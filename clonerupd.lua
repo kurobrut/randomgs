@@ -1381,7 +1381,7 @@ local function loadMain()
 		autoSaveAutoPasteConfig()
 	end
 
-	local function clearCurrentHouseFurniture(timeout)
+	local function clearCurrentHouseFurniture(timeout, safetyCheck)
 		timeout = timeout or 15
 		local ok, interior = pcall(function() return cd.get("house_interior") end)
 		if not ok or not interior then
@@ -1394,6 +1394,7 @@ local function loadMain()
 		end
 		if #ids == 0 then return true end
 
+		if safetyCheck and not safetyCheck() then return false, "Safety stop" end
 		local sellOk, sellErr = pcall(function()
 			router.get("HousingAPI/SellFurniture"):FireServer(false, ids, "sell")
 		end)
@@ -1403,7 +1404,7 @@ local function loadMain()
 
 		local started = tick()
 		while tick() - started < timeout do
-			if stopFlag then return false, "Stopped" end
+			if stopFlag or (safetyCheck and not safetyCheck()) then return false, "Stopped" end
 			local readOk, current = pcall(function() return cd.get("house_interior") end)
 			if readOk and current then
 				local remaining = 0
@@ -1425,6 +1426,52 @@ local function loadMain()
 	end
 
 	local function pasteIntoHouse(houseId, houseName, houseData, mode, expectedType)
+		local mutationStarted = false
+		local safetyStopped = false
+		-- Use live data by ID; dropdown names may be stale after filtering.
+		local function checkTargetName()
+			if safetyStopped or stopFlag or not autoPasteRunning then return false end
+			local ok, manager = pcall(function()
+				return ClientData.get("house_manager")
+			end)
+			local target = nil
+			if ok and type(manager) == "table" then
+				for _, house in pairs(manager) do
+					if type(house) == "table" and house.house_id ~= nil
+						and tostring(house.house_id) == tostring(houseId) then
+						target = house
+						break
+					end
+				end
+			end
+			local reason = nil
+			if not ok or type(manager) ~= "table" then
+				reason = "Could not read the live house list."
+			elseif not target then
+				reason = "The selected house is no longer in your owned house list."
+			elseif type(target.name) ~= "string" or not target.name:match("%S") then
+				reason = "The selected house's live name could not be verified."
+			elseif target.name:find("#", 1, true) then
+				reason = "The selected house's name contains # (possibly filtered). Rename it in-game before restarting."
+			end
+			if reason then
+				safetyStopped = true
+				stopFlag = true
+				setAPStatus("Stopped")
+				Rayfield:Notify({
+					Title = "Auto Paste Safety Stop",
+					Content = reason .. "\nHouse ID: " .. tostring(houseId)
+						.. (mutationStarted and "\nPartial work may remain; an in-flight request may still finish." or "\nFurniture was not cleared.")
+						.. "\nTarget and queue item kept. Rename, then restart to rebuild this target.",
+					Duration = 10,
+				})
+				return false
+			end
+			houseName = target.name
+			return true
+		end
+
+		if not checkTargetName() then return false end
 		local spawnOk, spawnErr = pcall(function()
 			router.get("HousingAPI/SpawnHouse"):FireServer(houseId)
 		end)
@@ -1466,7 +1513,14 @@ local function loadMain()
 			return "type_mismatch"
 		end
 
-		local cleared, clearErr = clearCurrentHouseFurniture(15)
+		-- Spawning/teleporting yields: recheck immediately before selling furniture.
+		if not checkTargetName() then
+			exitCurrentHouse()
+			return false
+		end
+
+		mutationStarted = true
+		local cleared, clearErr = clearCurrentHouseFurniture(15, checkTargetName)
 		if not cleared then
 			Rayfield:Notify({ Title = "Auto Paste", Content = "Could not clear " .. houseName .. ": " .. tostring(clearErr), Duration = 5 })
 			exitCurrentHouse()
@@ -1477,7 +1531,26 @@ local function loadMain()
 			return false
 		end
 
-		local pasteOk = (mode == "slow") and pastehouseslow(houseData) or pastehousefast(houseData)
+		-- Poll while InvokeServer is yielding; checks at each action also catch changes.
+		local monitoring = true
+		task.spawn(function()
+			while monitoring do
+				if not checkTargetName() then break end
+				task.wait(0.2)
+			end
+		end)
+		local callOk, pasteOk = pcall(function()
+			if mode == "slow" then
+				return pastehouseslow(houseData, checkTargetName)
+			end
+			return pastehousefast(houseData, checkTargetName)
+		end)
+		monitoring = false
+		if not callOk then
+			warn("[Auto Paste] Paste error: " .. tostring(pasteOk))
+			pasteOk = false
+		end
+		if not checkTargetName() then pasteOk = false end
 		if pasteOk ~= true then
 			Rayfield:Notify({ Title = "Auto Paste", Content = "Paste failed for " .. houseName .. "; queue item kept", Duration = 5 })
 			exitCurrentHouse()
@@ -1490,6 +1563,7 @@ local function loadMain()
 
 		exitCurrentHouse()
 		task.wait(2)
+		if not checkTargetName() then return false end
 		deselectAutoPasteTarget(houseId)
 		return true
 	end
@@ -2670,9 +2744,9 @@ local function loadMain()
 		return false
 	end
 
-	local function buytexturewithretry(room, texturetype, texture, tries)
+	local function buytexturewithretry(room, texturetype, texture, tries, safetyCheck)
 		tries = tries or 0
-		if stopFlag then return false end
+		if stopFlag or (safetyCheck and not safetyCheck()) then return false end
 		if textureexists(room, texturetype, texture) then return true end
 		if tries >= 10 then
 			warn("Failed to buy texture:", texture)
@@ -2683,12 +2757,12 @@ local function loadMain()
 		end)
 		if not ok then return false end
 		task.wait(0.2)
-		return textureexists(room, texturetype, texture) or buytexturewithretry(room, texturetype, texture, tries + 1)
+		return textureexists(room, texturetype, texture) or buytexturewithretry(room, texturetype, texture, tries + 1, safetyCheck)
 	end
 
 	local max_retries = 3
 
-	local function applyRequestedOutfits(requests)
+	local function applyRequestedOutfits(requests, safetyCheck)
 		if type(requests) ~= "table" then return true end
 
 		-- Outfit data is not applied by BuyFurnitures itself. We must wait for the
@@ -2715,7 +2789,7 @@ local function loadMain()
 		local applied = 0
 
 		for requestIndex, request in ipairs(outfitRequests) do
-			if stopFlag then return false end
+			if stopFlag or (safetyCheck and not safetyCheck()) then return false end
 
 			local properties = request.properties or {}
 			local matchedId = nil
@@ -2725,6 +2799,7 @@ local function loadMain()
 			-- instead of doing a single scan and silently skipping the outfit.
 			local lookupStarted = tick()
 			repeat
+				if stopFlag or (safetyCheck and not safetyCheck()) then return false end
 				local success, interior = pcall(function()
 					return cd.get("house_interior")
 				end)
@@ -2761,7 +2836,7 @@ local function loadMain()
 				local lastErr = nil
 
 				for attempt = 1, 3 do
-					if stopFlag then return false end
+					if stopFlag or (safetyCheck and not safetyCheck()) then return false end
 
 					local editOk, editResult = pcall(function()
 						return router.get("AvatarAPI/StartEditingMannequin"):InvokeServer(properties.outfit)
@@ -2772,6 +2847,7 @@ local function loadMain()
 						-- Give the edit state a moment to reach the server before saving it to
 						-- the furniture. Calling both remotes back-to-back was unreliable.
 						task.wait(0.2)
+						if stopFlag or (safetyCheck and not safetyCheck()) then return false end
 						local saveOk, saveResult = pcall(function()
 							return router.get("HousingAPI/ActivateFurniture"):InvokeServer(
 								plr,
@@ -2811,7 +2887,7 @@ local function loadMain()
 		return applied == #outfitRequests
 	end
 
-	local function placeFurnitures(furnList, isFix)
+	local function placeFurnitures(furnList, isFix, safetyCheck)
 		local totalfurnitures = #furnList
 		if totalfurnitures == 0 then return true end
 		updateprog("0/" .. totalfurnitures)
@@ -2831,7 +2907,7 @@ local function loadMain()
 		updatestatus(isFix and "Fixing Missing Items" or "Pasting Furniture (Slow)")
 
 		for batchIndex, batch in ipairs(batches) do
-			if stopFlag then return false end
+			if stopFlag or (safetyCheck and not safetyCheck()) then return false end
 			for _, item in ipairs(batch) do
 				updateitem((isFix and "Fixing: " or "Placing: ") .. (item.kind or "Unknown"))
 				local normalized = {}
@@ -2848,6 +2924,7 @@ local function loadMain()
 			local beforeOk, beforeCount = pcall(function() return countfurnitures(cd.get("house_interior").furniture) end)
 			if not beforeOk then return false end
 
+			if stopFlag or (safetyCheck and not safetyCheck()) then return false end
 			local invokeOk, invokeErr = pcall(function()
 				return router.get("HousingAPI/BuyFurnitures"):InvokeServer(batch)
 			end)
@@ -2859,7 +2936,7 @@ local function loadMain()
 				local confirmed = false
 				local started = tick()
 				while tick() - started < math.max(4, delay_seconds + 3) do
-					if stopFlag then return false end
+					if stopFlag or (safetyCheck and not safetyCheck()) then return false end
 					local afterOk, afterCount = pcall(function() return countfurnitures(cd.get("house_interior").furniture) end)
 					if afterOk and afterCount - beforeCount >= #batch then
 						confirmed = true
@@ -2944,7 +3021,7 @@ local function loadMain()
 	Tab:CreateSection("Paste Functions")
 
 	-- ==================== PASTE FAST (assigned to upvalue) ====================
-	pastehousefast = function(houseData)
+	pastehousefast = function(houseData, safetyCheck)
 		local houseToPaste = houseData or savedhouse
 		if not houseToPaste or not houseToPaste.furniture then
 			Rayfield:Notify({ Title = "Error", Content = "No house has been saved", Duration = 3, Image = "circle-alert" })
@@ -2981,7 +3058,7 @@ local function loadMain()
 		local unavailableFurniture = {}
 
 		for i, v in pairs(validFurniture) do
-			if stopFlag then break end
+			if stopFlag or (safetyCheck and not safetyCheck()) then break end
 			local canbuy, exists = canbuyfurniture(v.id)
 			if not canbuy and exists == true then
 				updatestatus("Idle") updateprog("-") updateitem("-")
@@ -3022,7 +3099,7 @@ local function loadMain()
 
 		notifyUnavailableFurniture(unavailableFurniture)
 
-		if stopFlag then
+		if stopFlag or (safetyCheck and not safetyCheck()) then
 			updatestatus("Stopped") updateprog("-") updateitem("-")
 			return false
 		end
@@ -3036,6 +3113,7 @@ local function loadMain()
 			end
 			local beforeOk, beforeCount = pcall(function() return countfurnitures(cd.get("house_interior").furniture) end)
 			if not beforeOk then return false end
+			if stopFlag or (safetyCheck and not safetyCheck()) then return false end
 			local invokeOk, invokeErr = pcall(function()
 				return router.get("HousingAPI/BuyFurnitures"):InvokeServer(furniturest)
 			end)
@@ -3046,7 +3124,7 @@ local function loadMain()
 			local confirmed = false
 			local started = tick()
 			while tick() - started < 6 do
-				if stopFlag then return false end
+				if stopFlag or (safetyCheck and not safetyCheck()) then return false end
 				local afterOk, afterCount = pcall(function() return countfurnitures(cd.get("house_interior").furniture) end)
 				if afterOk and afterCount - beforeCount >= #furniturest then confirmed = true break end
 				task.wait(0.35)
@@ -3055,14 +3133,14 @@ local function loadMain()
 				Rayfield:Notify({ Title = "Error", Content = "Furniture paste was not fully confirmed", Duration = 5, Image = "circle-alert" })
 				return false
 			end
-			applyRequestedOutfits(furniturest)
+			applyRequestedOutfits(furniturest, safetyCheck)
 		end
 
 		-- Activate furniture
 		local success, interior = pcall(function() return cd.get("house_interior") end)
 		if success and interior and interior.furniture then
 			for i, v in pairs(interior.furniture) do
-				if stopFlag then break end
+				if stopFlag or (safetyCheck and not safetyCheck()) then break end
 				if v.text then
 					pcall(function()
 						router.get("HousingAPI/ActivateFurniture"):InvokeServer(plr, i, "UseBlock", v.text, plr.Character)
@@ -3077,32 +3155,36 @@ local function loadMain()
 			updatestatus("Pasting Textures")
 			updateprog("-")
 			for roomId, textureData in pairs(houseToPaste.textures) do
-				if stopFlag then break end
+				if stopFlag or (safetyCheck and not safetyCheck()) then break end
 				if textureData.floors and not textureexists(roomId, "floors", textureData.floors) then
 					updateitem(roomId .. " floors: " .. textureData.floors)
-					if not buytexturewithretry(roomId, "floors", textureData.floors) then texturesSuccessful = false end
+					if not buytexturewithretry(roomId, "floors", textureData.floors, nil, safetyCheck) then texturesSuccessful = false end
 				end
-				if stopFlag then break end
+				if stopFlag or (safetyCheck and not safetyCheck()) then break end
 				if textureData.walls and not textureexists(roomId, "walls", textureData.walls) then
 					updateitem(roomId .. " walls: " .. textureData.walls)
-					if not buytexturewithretry(roomId, "walls", textureData.walls) then texturesSuccessful = false end
+					if not buytexturewithretry(roomId, "walls", textureData.walls, nil, safetyCheck) then texturesSuccessful = false end
 				end
 				task.wait()
 			end
 		end
 
+		if stopFlag or (safetyCheck and not safetyCheck()) then return false end
 		if houseToPaste.ambiance then
 			pcall(function() router.get("AmbianceAPI/UpdateAmbiance"):FireServer(houseToPaste.ambiance) end)
 		end
+		if stopFlag or (safetyCheck and not safetyCheck()) then return false end
 		if houseToPaste.music then
 			pcall(function()
 				router.get("RadioAPI/Play"):FireServer(houseToPaste.music.name, houseToPaste.music.id)
 				if not houseToPaste.music.playing then
+					if stopFlag or (safetyCheck and not safetyCheck()) then return end
 					router.get("RadioAPI/Pause"):InvokeServer()
 				end
 			end)
 		end
 
+		if stopFlag or (safetyCheck and not safetyCheck()) then return false end
 		if not texturesSuccessful then
 			-- Unavailable/failed textures are non-fatal. Keep the furniture that was
 			-- successfully pasted and let Auto Paste remove this file from the queue.
@@ -3118,7 +3200,7 @@ local function loadMain()
 	end
 
 	-- ==================== PASTE SLOW (assigned to upvalue) ====================
-	pastehouseslow = function(houseData)
+	pastehouseslow = function(houseData, safetyCheck)
 		local houseToPaste = houseData or savedhouse
 		if not houseToPaste or not houseToPaste.furniture then
 			Rayfield:Notify({ Title = "Error", Content = "No house has been saved", Duration = 3, Image = "circle-alert" })
@@ -3155,7 +3237,7 @@ local function loadMain()
 		local unavailableFurniture = {}
 
 		for i, v in pairs(validFurniture) do
-			if stopFlag then break end
+			if stopFlag or (safetyCheck and not safetyCheck()) then break end
 			local canbuy, exists = canbuyfurniture(v.id)
 			if not canbuy and exists == true then
 				updatestatus("Idle") updateprog("-") updateitem("-")
@@ -3196,7 +3278,7 @@ local function loadMain()
 
 		notifyUnavailableFurniture(unavailableFurniture)
 
-		if stopFlag then
+		if stopFlag or (safetyCheck and not safetyCheck()) then
 			updatestatus("Stopped") updateprog("-") updateitem("-")
 			return false
 		end
@@ -3207,12 +3289,12 @@ local function loadMain()
 				Rayfield:Notify({ Title = "Error", Content = "Not enough money for this paste. Need $" .. requiredCost .. ", have $" .. availableMoney, Duration = 5, Image = "circle-alert" })
 				return false
 			end
-			if not placeFurnitures(furniturest, false) then return false end
+			if not placeFurnitures(furniturest, false, safetyCheck) then return false end
 			task.wait(1)
-			applyRequestedOutfits(furniturest)
+			applyRequestedOutfits(furniturest, safetyCheck)
 		end
 
-		if stopFlag then
+		if stopFlag or (safetyCheck and not safetyCheck()) then
 			updatestatus("Stopped") updateprog("-") updateitem("-")
 			return false
 		end
@@ -3221,7 +3303,7 @@ local function loadMain()
 		local success, interior = pcall(function() return cd.get("house_interior") end)
 		if success and interior and interior.furniture then
 			for i, v in pairs(interior.furniture) do
-				if stopFlag then break end
+				if stopFlag or (safetyCheck and not safetyCheck()) then break end
 				if v.text then
 					pcall(function()
 						router.get("HousingAPI/ActivateFurniture"):InvokeServer(plr, i, "UseBlock", v.text, plr.Character)
@@ -3236,32 +3318,36 @@ local function loadMain()
 			updatestatus("Pasting Textures")
 			updateprog("-")
 			for roomId, textureData in pairs(houseToPaste.textures) do
-				if stopFlag then break end
+				if stopFlag or (safetyCheck and not safetyCheck()) then break end
 				if textureData.floors and not textureexists(roomId, "floors", textureData.floors) then
 					updateitem(roomId .. " floors: " .. textureData.floors)
-					if not buytexturewithretry(roomId, "floors", textureData.floors) then texturesSuccessful = false end
+					if not buytexturewithretry(roomId, "floors", textureData.floors, nil, safetyCheck) then texturesSuccessful = false end
 				end
-				if stopFlag then break end
+				if stopFlag or (safetyCheck and not safetyCheck()) then break end
 				if textureData.walls and not textureexists(roomId, "walls", textureData.walls) then
 					updateitem(roomId .. " walls: " .. textureData.walls)
-					if not buytexturewithretry(roomId, "walls", textureData.walls) then texturesSuccessful = false end
+					if not buytexturewithretry(roomId, "walls", textureData.walls, nil, safetyCheck) then texturesSuccessful = false end
 				end
 				task.wait()
 			end
 		end
 
+		if stopFlag or (safetyCheck and not safetyCheck()) then return false end
 		if houseToPaste.ambiance then
 			pcall(function() router.get("AmbianceAPI/UpdateAmbiance"):FireServer(houseToPaste.ambiance) end)
 		end
+		if stopFlag or (safetyCheck and not safetyCheck()) then return false end
 		if houseToPaste.music then
 			pcall(function()
 				router.get("RadioAPI/Play"):FireServer(houseToPaste.music.name, houseToPaste.music.id)
 				if not houseToPaste.music.playing then
+					if stopFlag or (safetyCheck and not safetyCheck()) then return end
 					router.get("RadioAPI/Pause"):InvokeServer()
 				end
 			end)
 		end
 
+		if stopFlag or (safetyCheck and not safetyCheck()) then return false end
 		if not texturesSuccessful then
 			-- Unavailable/failed textures are non-fatal. Keep the furniture that was
 			-- successfully pasted and let Auto Paste remove this file from the queue.
