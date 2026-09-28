@@ -441,6 +441,20 @@ local function loadMain()
 	local function deserializeFileValue(value, context)
 		if type(value) ~= "table" then return value end
 
+		-- JSON object keys are strings. Housing color channels must be numeric,
+		-- including sparse channels, so rebuild rather than mutate during pairs().
+		if context == "colors" then
+			local colors = {}
+			for key, color in pairs(value) do
+				local index = tonumber(key)
+				if not index or index < 1 or index % 1 ~= 0 or index == math.huge then
+					error("Invalid furniture color index: " .. tostring(key))
+				end
+				colors[index] = deserializeFileValue(color, "color")
+			end
+			return colors
+		end
+
 		-- New files use explicit type tags so Vector3 and Color3 are never ambiguous.
 		if value.__type == "CFrame" then
 			local components = value.components or value.c or {}
@@ -1410,70 +1424,6 @@ local function loadMain()
 		return getInteriorExactType(interior)
 	end
 
-	-- Wait until the CURRENT house has completely settled before leaving it.
-	-- This prevents Auto Paste from entering the next house while late furniture/
-	-- texture updates from the previous paste are still arriving.
-	local function waitForCurrentPasteToFinish(houseId, quietTime, timeout)
-		quietTime = quietTime or 2.5
-		timeout = timeout or 25
-
-		local started = tick()
-		local stableSince = nil
-		local lastSignature = nil
-
-		local function makeSignature(interior)
-			local furnitureCount = 0
-			for _ in pairs(interior.furniture or {}) do
-				furnitureCount += 1
-			end
-
-			local textureParts = {}
-			for roomId, textureData in pairs(interior.textures or {}) do
-				table.insert(textureParts,
-					tostring(roomId) .. ":" ..
-					tostring(textureData.floors or "") .. ":" ..
-					tostring(textureData.walls or "")
-				)
-			end
-			table.sort(textureParts)
-
-			return tostring(furnitureCount) .. "|" .. table.concat(textureParts, ";")
-		end
-
-		while tick() - started < timeout do
-			if stopFlag or not autoPasteRunning then
-				return false, "Stopped"
-			end
-
-			local ok, interior = pcall(function()
-				return cd.get("house_interior")
-			end)
-
-			if ok and interior and interior.house_id == houseId then
-				local signature = makeSignature(interior)
-
-				if signature == lastSignature then
-					if not stableSince then
-						stableSince = tick()
-					elseif tick() - stableSince >= quietTime then
-						return true
-					end
-				else
-					lastSignature = signature
-					stableSince = tick()
-				end
-			else
-				-- Never treat a different/missing house as "finished".
-				stableSince = nil
-				lastSignature = nil
-			end
-
-			task.wait(0.25)
-		end
-
-		return false, "Timed out waiting for the paste to settle"
-	end
-
 	local function pasteIntoHouse(houseId, houseName, houseData, mode, expectedType)
 		local spawnOk, spawnErr = pcall(function()
 			router.get("HousingAPI/SpawnHouse"):FireServer(houseId)
@@ -1527,12 +1477,7 @@ local function loadMain()
 			return false
 		end
 
-		local pasteOk
-		if mode == "slow" then
-			pasteOk = pastehouseslow(houseData)
-		else
-			pasteOk = pastehousefast(houseData)
-		end
+		local pasteOk = (mode == "slow") and pastehouseslow(houseData) or pastehousefast(houseData)
 		if pasteOk ~= true then
 			Rayfield:Notify({ Title = "Auto Paste", Content = "Paste failed for " .. houseName .. "; queue item kept", Duration = 5 })
 			exitCurrentHouse()
@@ -1543,31 +1488,9 @@ local function loadMain()
 			return false
 		end
 
-		-- HARD GATE: do not leave / start the next house until this house is stable.
-		setAPStatus("Waiting for paste to finish")
-		local settled, settleErr = waitForCurrentPasteToFinish(houseId, 2.5, 25)
-		if not settled then
-			if stopFlag or not autoPasteRunning then
-				exitCurrentHouse()
-				return false
-			end
-
-			Rayfield:Notify({
-				Title = "Auto Paste",
-				Content = houseName .. " did not finish settling: " .. tostring(settleErr) .. ". Staying on this queue item.",
-				Duration = 6,
-			})
-			exitCurrentHouse()
-			return false
-		end
-
-		setAPStatus("Finishing " .. houseName)
-		task.wait(0.75) -- small final buffer after the stable-state confirmation
-
 		exitCurrentHouse()
 		task.wait(2)
 		deselectAutoPasteTarget(houseId)
-		setAPStatus("Running")
 		return true
 	end
 
@@ -2752,7 +2675,7 @@ local function loadMain()
 		if stopFlag then return false end
 		if textureexists(room, texturetype, texture) then return true end
 		if tries >= 10 then
-			-- The paste routine reports failed textures once at completion.
+			warn("Failed to buy texture:", texture)
 			return false
 		end
 		local ok = pcall(function()
@@ -2765,328 +2688,128 @@ local function loadMain()
 
 	local max_retries = 3
 
-	local outfitApplyBusy = false
 	local function applyRequestedOutfits(requests)
 		if type(requests) ~= "table" then return true end
-		-- Editing state belongs to the player, so two outfit workers must not overlap.
-		if outfitApplyBusy then
-			Rayfield:Notify({ Title = "Outfits", Content = "An outfit application is already running.", Duration = 5 })
-			return false
+
+		-- Outfit data is not applied by BuyFurnitures itself. We must wait for the
+		-- newly-created furniture to appear in house_interior, match each request to
+		-- its mannequin, then use the normal mannequin edit/save flow.
+		local outfitRequests = {}
+		for _, request in ipairs(requests) do
+			local properties = request.properties or {}
+			if properties.outfit ~= nil then
+				table.insert(outfitRequests, request)
+			end
 		end
-		outfitApplyBusy = true
-		local runOk, result = pcall(function()
-			local outfitRequests = {}
-			for _, request in ipairs(requests) do
-				if request.properties and request.properties.outfit ~= nil then
-					table.insert(outfitRequests, request)
-				end
-			end
-			if #outfitRequests == 0 then return true end
+		if #outfitRequests == 0 then return true end
 
-			local function readInterior()
-				local ok, interior = pcall(function() return cd.get("house_interior") end)
-				if ok and interior and interior.player == plr and type(interior.furniture) == "table" then
-					return interior
-				end
-			end
-			local initialInterior = readInterior()
-			if not initialInterior then error("Enter your house before applying outfits") end
-			local houseId = initialInterior.house_id
-			local function currentFurniture()
-				local interior = readInterior()
-				if not interior or interior.house_id ~= houseId then
-					error("House changed while applying outfits")
-				end
-				return interior.furniture
-			end
+		local character = plr.Character
+		if not character then
+			local ok, result = pcall(function()
+				return plr.CharacterAdded:Wait()
+			end)
+			if ok then character = result end
+		end
 
-			-- JSON may turn numeric keys into strings. Compare saved fields recursively;
-			-- allow the server to add fields, but never ignore a saved field or value.
-			local function containsSaved(actual, expected)
-				if type(expected) ~= "table" then return actual == expected end
-				if type(actual) ~= "table" then return false end
-				for key, value in pairs(expected) do
-					local actualValue = actual[key]
-					if actualValue == nil then
-						local alternate = type(key) == "number" and tostring(key) or tonumber(key)
-						if alternate ~= nil then actualValue = actual[alternate] end
-					end
-					if not containsSaved(actualValue, value) then return false end
-				end
-				return true
-			end
-			local function explicitlyRejected(value)
-				return value == false or (type(value) == "table" and (value.success == false or value.ok == false))
-			end
+		local usedFurniture = {}
+		local applied = 0
 
-			local byKind, indexed, used = {}, {}, {}
-			local function refreshIndex()
-				for id, furniture in pairs(currentFurniture()) do
-					if not indexed[id] and furniture.id ~= nil then
-						indexed[id] = true
-						byKind[furniture.id] = byKind[furniture.id] or {}
-						table.insert(byKind[furniture.id], id)
-					end
-				end
-			end
-			refreshIndex()
-			local function findMatch(request)
-				local target = request.properties.cframe
-				if typeof(target) ~= "CFrame" then return nil end
-				local furniture = currentFurniture()
-				local nearest, distance = nil, math.huge
-				for _, id in ipairs(byKind[request.kind] or {}) do
-					local item = furniture[id]
-					if not used[id] and item and item.id == request.kind and typeof(item.cframe) == "CFrame" then
-						local delta = (item.cframe.Position - target.Position).Magnitude
-						-- Do not fall back to an unrelated mannequin elsewhere in the house.
-						if delta <= 0.1 and delta < distance then nearest, distance = id, delta end
-					end
-				end
-				return nearest
-			end
+		for requestIndex, request in ipairs(outfitRequests) do
+			if stopFlag then return false end
 
-			-- One shared replication grace period, rather than five seconds per missing item.
-			local lookupDeadline = os.clock() + 5
-			local applied, unverified = 0, 0
-			local firstFailure = nil
-			updatestatus("Applying Mannequin Outfits")
-			for index, request in ipairs(outfitRequests) do
-				if stopFlag then return false end
-				local properties = request.properties
-				local matchedId = findMatch(request)
-				while not matchedId and os.clock() < lookupDeadline do
-					if stopFlag then return false end
-					task.wait(0.1)
-					refreshIndex()
-					matchedId = findMatch(request)
-				end
-				local lastErr = "No mannequin of this kind found at the saved position"
-				local saved = false
-				local submitted = false
-				if matchedId then
-					used[matchedId] = true
-					local function isSaved()
-						local furniture = currentFurniture()[matchedId]
-						return furniture and furniture.id == request.kind
-							and containsSaved(furniture.outfit, properties.outfit)
-							and (properties.outfit_name == nil or furniture.outfit_name == properties.outfit_name)
-					end
-					if type(properties.outfit) == "table" and next(properties.outfit) == nil then
-						lastErr = "Saved outfit is empty"
-					else
-						saved = isSaved()
-						for attempt = 1, 3 do
-							if saved or submitted then break end
-							if stopFlag then return false end
-							currentFurniture()
-							local editOk, editResult = pcall(function()
-								return router.get("AvatarAPI/StartEditingMannequin"):InvokeServer(properties.outfit)
-							end)
-							if not editOk or explicitlyRejected(editResult) then
-								lastErr = "StartEditingMannequin rejected/failed: " .. tostring(editResult)
-							else
-								-- Fast first attempt; longer settling time only after a failed attempt.
-								task.wait(attempt == 1 and 0.05 or 0.2)
-								if stopFlag then return false end
-								currentFurniture()
-								local saveOk, saveResult = pcall(function()
-									if not plr.Character then error("Character is unavailable") end
-									return router.get("HousingAPI/ActivateFurniture"):InvokeServer(
-										plr, matchedId, "UseBlock",
-										{ save_outfit = true, outfit_name = properties.outfit_name or "Outfit" }, plr.Character)
-								end)
-								if not saveOk or explicitlyRejected(saveResult) then
-									lastErr = "ActivateFurniture rejected/failed: " .. tostring(saveResult)
-								else
-									-- No rejection was reported. ClientData may omit or normalize outfit
-									-- fields, so a mismatch is unverified, not a reason to save again.
-									submitted = true
-								end
-								if stopFlag then return false end
-								saved = isSaved()
+			local properties = request.properties or {}
+			local matchedId = nil
+			local matchedDistance = math.huge
+
+			-- ClientData can lag behind BuyFurnitures for a moment. Retry the lookup
+			-- instead of doing a single scan and silently skipping the outfit.
+			local lookupStarted = tick()
+			repeat
+				local success, interior = pcall(function()
+					return cd.get("house_interior")
+				end)
+
+				if success and interior and interior.furniture then
+					local fallbackId = nil
+					for furnitureId, furniture in pairs(interior.furniture) do
+						if not usedFurniture[furnitureId] and furniture.id == request.kind then
+							fallbackId = fallbackId or furnitureId
+							local distance = math.huge
+							if typeof(furniture.cframe) == "CFrame" and typeof(properties.cframe) == "CFrame" then
+								distance = (furniture.cframe.Position - properties.cframe.Position).Magnitude
 							end
-							if not saved and not submitted and attempt < 3 then
-								task.wait(0.2)
-								if stopFlag then return false end
-								saved = isSaved()
+							if distance < matchedDistance then
+								matchedDistance = distance
+								matchedId = furnitureId
 							end
 						end
 					end
+
+					-- If CFrames are unavailable/different after server normalization, still
+					-- use an unused furniture instance of the exact same kind.
+					if not matchedId then matchedId = fallbackId end
 				end
+
+				if not matchedId then task.wait(0.25) end
+			until matchedId or tick() - lookupStarted >= 5
+
+			if not matchedId then
+				warn("[Cubix Outfit] Could not find pasted mannequin for", request.kind, "request", requestIndex)
+			else
+				usedFurniture[matchedId] = true
+				local saved = false
+				local lastErr = nil
+
+				for attempt = 1, 3 do
+					if stopFlag then return false end
+
+					local editOk, editResult = pcall(function()
+						return router.get("AvatarAPI/StartEditingMannequin"):InvokeServer(properties.outfit)
+					end)
+					if not editOk then
+						lastErr = "StartEditingMannequin: " .. tostring(editResult)
+					else
+						-- Give the edit state a moment to reach the server before saving it to
+						-- the furniture. Calling both remotes back-to-back was unreliable.
+						task.wait(0.2)
+						local saveOk, saveResult = pcall(function()
+							return router.get("HousingAPI/ActivateFurniture"):InvokeServer(
+								plr,
+								matchedId,
+								"UseBlock",
+								{ save_outfit = true, outfit_name = properties.outfit_name or "Outfit" },
+								character or plr.Character
+							)
+						end)
+						if saveOk then
+							saved = true
+							break
+						else
+							lastErr = "ActivateFurniture: " .. tostring(saveResult)
+						end
+					end
+
+					task.wait(0.35)
+				end
+
 				if saved then
 					applied += 1
-				elseif submitted then
-					unverified += 1
 				else
-					firstFailure = firstFailure or (tostring(request.kind) .. ": " .. tostring(lastErr)):gsub("%s+", " "):sub(1, 180)
+					warn("[Cubix Outfit] Failed to apply outfit to", request.kind, "-", tostring(lastErr))
 				end
-				updateprog(index .. "/" .. #outfitRequests .. " outfits processed; " .. applied .. " verified, " .. unverified .. " unverified")
 			end
-			local failed = #outfitRequests - applied - unverified
-			if failed > 0 then
-				local summary = failed .. " outfit request(s) failed; " .. applied .. " verified, " .. unverified .. " unverified."
-				warn("[Cubix Outfit] " .. summary .. " First issue: " .. (firstFailure or "Unknown"))
-				Rayfield:Notify({ Title = "Outfit Summary", Content = summary, Duration = 5 })
-			end
-			-- Unverified saves are non-fatal; missing mannequins, invalid outfits and
-			-- repeated explicit rejections/errors still fail the outfit step.
-			return failed == 0
-		end)
-		outfitApplyBusy = false
-		if not runOk then
-			warn("[Cubix Outfit]", result)
-			Rayfield:Notify({ Title = "Outfit Error", Content = tostring(result), Duration = 6 })
-			return false
 		end
-		return result
+
+		if applied < #outfitRequests then
+			Rayfield:Notify({
+				Title = "Outfits",
+				Content = "Applied " .. applied .. "/" .. #outfitRequests .. " mannequin outfit(s). Check console for failed ones.",
+				Duration = 5,
+			})
+		end
+
+		return applied == #outfitRequests
 	end
-
-
-	local function buyAndConfirmFurniture(requests, label, onProgress)
-		if #requests == 0 then return true, 0 end
-		if stopFlag then return false, 0 end
-		local function readInterior()
-			local ok, interior = pcall(function() return cd.get("house_interior") end)
-			if ok and interior and interior.player == plr and type(interior.furniture) == "table" then
-				return interior
-			end
-		end
-		local before = readInterior()
-		if not before then
-			Rayfield:Notify({ Title = "Furniture", Content = "Cannot read your current house. Purchase was not sent.", Duration = 6 })
-			return false, 0
-		end
-		local houseId = before.house_id
-		local existing = {}
-		for id in pairs(before.furniture) do existing[tostring(id)] = true end
-		-- Snapshot IDs before invoking: an RPC error can still follow a completed purchase.
-		local invokeOk, response = pcall(function()
-			return router.get("HousingAPI/BuyFurnitures"):InvokeServer(requests)
-		end)
-		local rejected = invokeOk and (response == false or (type(response) == "table"
-			and (response.success == false or response.ok == false)))
-		local function briefResponse()
-			if not invokeOk then
-				return "Call error: " .. tostring(response):gsub("%s+", " "):sub(1, 140)
-			end
-			local counts, statuses = {}, {}
-			if type(response) == "table" and type(response.results) == "table" then
-				for _, result in pairs(response.results) do
-					local status = type(result) == "table" and result.status
-					if status and status ~= "SUCCESS" then
-						status = tostring(status):gsub("%s+", " "):sub(1, 70)
-						counts[status] = (counts[status] or 0) + 1
-					end
-				end
-			end
-			for status, count in pairs(counts) do table.insert(statuses, status .. " x" .. count) end
-			table.sort(statuses)
-			if #statuses > 0 then
-				local summary = table.concat(statuses, ", ", 1, math.min(2, #statuses))
-				if #statuses > 2 then summary = summary .. ", ..." end
-				return summary
-			end
-			return rejected and "Purchase reported a rejection." or "Placement could not be verified."
-		end
-
-		local function matchNewFurniture(furniture)
-			local byKind = {}
-			for id, item in pairs(furniture) do
-				if not existing[tostring(id)] and item.id ~= nil and typeof(item.cframe) == "CFrame" then
-					byKind[item.id] = byKind[item.id] or {}
-					table.insert(byKind[item.id], { id = tostring(id), cframe = item.cframe })
-				end
-			end
-			local candidates = {}
-			for index, request in ipairs(requests) do
-				local target = request.properties and request.properties.cframe
-				local choices = {}
-				if typeof(target) == "CFrame" then
-					for _, item in ipairs(byKind[request.kind] or {}) do
-						local distance = (target.Position - item.cframe.Position).Magnitude
-						-- Allow small position rounding, not a same-kind item elsewhere.
-						if distance <= 0.15 then
-							table.insert(choices, { id = item.id, distance = distance })
-						end
-					end
-				end
-				table.sort(choices, function(a, b) return a.distance < b.distance end)
-				candidates[index] = choices
-			end
-			-- One new furniture ID can satisfy exactly one request. Reassignment handles
-			-- overlapping position tolerances without a greedy match losing an item.
-			local owner = {}
-			local function assign(index, visited)
-				for _, choice in ipairs(candidates[index]) do
-					if not visited[choice.id] then
-						visited[choice.id] = true
-						if not owner[choice.id] or assign(owner[choice.id], visited) then
-							owner[choice.id] = index
-							return true
-						end
-					end
-				end
-				return false
-			end
-			for index in ipairs(requests) do assign(index, {}) end
-			local matched, count = {}, 0
-			for _, index in pairs(owner) do matched[index] = true; count += 1 end
-			return count, matched
-		end
-
-		local started = os.clock()
-		local deadline, hardDeadline = started + 12, started + 30
-		local confirmed, matched = 0, {}
-		local lastReported = -1
-		local readable = false
-		repeat
-			if stopFlag then return false, confirmed end
-			local interior = readInterior()
-			if interior then
-				if interior.house_id ~= houseId then
-					Rayfield:Notify({ Title = "Furniture", Content = "House changed; confirmation stopped.", Duration = 6 })
-					return false, confirmed
-				end
-				readable = true
-				local count, currentMatches = matchNewFurniture(interior.furniture)
-				if count > confirmed then deadline = math.min(hardDeadline, math.max(deadline, os.clock() + 4)) end
-				confirmed, matched = count, currentMatches
-				if confirmed ~= lastReported then
-					lastReported = confirmed
-					if onProgress then onProgress(confirmed) end
-				end
-				if confirmed == #requests then return true, confirmed end
-			else
-				readable = false
-			end
-			if os.clock() >= deadline then break end
-			task.wait(0.25)
-		until false
-
-		local counts, names = {}, {}
-		for index, request in ipairs(requests) do
-			if not matched[index] then
-				local kind = tostring(request.kind)
-				counts[kind] = (counts[kind] or 0) + 1
-			end
-		end
-		for kind, count in pairs(counts) do table.insert(names, kind .. " x" .. count) end
-		table.sort(names)
-		local detail = table.concat(names, ", ", 1, math.min(3, #names))
-		if #names > 3 then detail = detail .. ", +" .. (#names - 3) .. " more types" end
-		if #detail > 160 then detail = detail:sub(1, 157) .. "..." end
-		local reason = briefResponse()
-		if not readable then reason = "House data unavailable. " .. reason end
-		local summary = label .. ": " .. confirmed .. "/" .. #requests
-			.. " verified, " .. (#requests - confirmed) .. " unconfirmed. " .. reason
-		-- One bounded console line and one short toast, without per-item logs or JSON dumps.
-		warn("[Cubix Furniture] " .. summary .. " Items: " .. detail)
-		Rayfield:Notify({ Title = "Furniture Summary", Content = summary, Duration = 5 })
-		updatestatus("Furniture Incomplete")
-		return false, confirmed
-	end
-
 
 	local function placeFurnitures(furnList, isFix)
 		local totalfurnitures = #furnList
@@ -3104,6 +2827,7 @@ local function loadMain()
 		if #currentBatch > 0 then table.insert(batches, currentBatch) end
 
 		local placed = 0
+		local allSuccessful = true
 		updatestatus(isFix and "Fixing Missing Items" or "Pasting Furniture (Slow)")
 
 		for batchIndex, batch in ipairs(batches) do
@@ -3113,24 +2837,47 @@ local function loadMain()
 				local normalized = {}
 				for colorIndex, color in pairs((item.properties and item.properties.colors) or {}) do
 					if typeof(color) == "Color3" then
-						normalized[colorIndex] = color
+						normalized[tonumber(colorIndex) or colorIndex] = color
 					elseif type(color) == "table" then
-						normalized[colorIndex] = Color3.new(color[1] or color.R or color.r or 1, color[2] or color.G or color.g or 1, color[3] or color.B or color.b or 1)
+						normalized[tonumber(colorIndex) or colorIndex] = Color3.new(color[1] or color.R or color.r or 1, color[2] or color.G or color.g or 1, color[3] or color.B or color.b or 1)
 					end
 				end
 				item.properties.colors = normalized
 			end
 
-			local complete, confirmed = buyAndConfirmFurniture(batch, "Batch " .. batchIndex, function(count)
-				updateprog((placed + count) .. "/" .. totalfurnitures)
+			local beforeOk, beforeCount = pcall(function() return countfurnitures(cd.get("house_interior").furniture) end)
+			if not beforeOk then return false end
+
+			local invokeOk, invokeErr = pcall(function()
+				return router.get("HousingAPI/BuyFurnitures"):InvokeServer(batch)
 			end)
-			placed += confirmed
+			if not invokeOk then
+				allSuccessful = false
+				warn("Furniture batch invoke failed:", invokeErr)
+			else
+				-- Never re-send a partially successful batch: that can duplicate furniture.
+				local confirmed = false
+				local started = tick()
+				while tick() - started < math.max(4, delay_seconds + 3) do
+					if stopFlag then return false end
+					local afterOk, afterCount = pcall(function() return countfurnitures(cd.get("house_interior").furniture) end)
+					if afterOk and afterCount - beforeCount >= #batch then
+						confirmed = true
+						break
+					end
+					task.wait(0.4)
+				end
+				if confirmed then
+					placed += #batch
+				else
+					allSuccessful = false
+					Rayfield:Notify({ Title = "Warning", Content = "Batch " .. batchIndex .. " was not fully confirmed. It will not be resent to avoid duplicates.", Duration = 6, Image = "circle-alert" })
+				end
+			end
 			updateprog(placed .. "/" .. totalfurnitures)
-			-- Stop here if unresolved: late items must not be mistaken for the next batch.
-			if not complete then return false end
 			task.wait(delay_seconds)
 		end
-		return true
+		return allSuccessful
 	end
 
 	Tab:CreateButton({
@@ -3208,29 +2955,24 @@ local function loadMain()
 
 		local validFurniture = {}
 		local totalfurnitures = 0
-		local skippedLures, invalidPositions = 0, 0
 		for i, v in pairs(houseToPaste.furniture) do
 			if v.id == "lures_2023_cozy_home_lure" then
-				skippedLures += 1
+				warn("[SKIP] Skipping lure item:", v.id)
 				continue
 			end
 			if type(v.cframe) == "table" then
 				local ok, cf = pcall(function() return CFrame.new(table.unpack(v.cframe)) end)
 				if ok and cf then v.cframe = cf
-				else invalidPositions += 1 continue end
+				else warn("[SKIP] Could not convert cframe for:", v.id) continue end
 			end
 			if typeof(v.cframe) == "CFrame" then
 				validFurniture[i] = v
 				totalfurnitures += 1
 			else
-				invalidPositions += 1
+				warn("[SKIP] Missing or invalid cframe for:", v.id)
 			end
 		end
 
-		if skippedLures + invalidPositions > 0 then
-			warn("[Cubix Scan] Skipped " .. (skippedLures + invalidPositions) .. " item(s): "
-				.. skippedLures .. " excluded lure(s), " .. invalidPositions .. " invalid position(s).")
-		end
 		updateprog("0/" .. totalfurnitures)
 		updateitem("-")
 
@@ -3254,9 +2996,9 @@ local function loadMain()
 			local normalizedColors = {}
 			for ci, col in pairs(v.colors or {}) do
 				if typeof(col) == "Color3" then
-					normalizedColors[ci] = col
+					normalizedColors[tonumber(ci) or ci] = col
 				elseif type(col) == "table" then
-					normalizedColors[ci] = Color3.new(
+					normalizedColors[tonumber(ci) or ci] = Color3.new(
 						col[1] or col.R or col.r or 1,
 						col[2] or col.G or col.g or 1,
 						col[3] or col.B or col.b or 1
@@ -3292,13 +3034,28 @@ local function loadMain()
 				updatestatus("Idle") updateprog("-") updateitem("-")
 				return false
 			end
-			if not buyAndConfirmFurniture(furniturest, "Fast paste", function(count)
-				updateprog(count .. "/" .. #furniturest .. " furniture confirmed")
-			end) then return false end
-			if not applyRequestedOutfits(furniturest) then
-				updatestatus(stopFlag and "Stopped" or "Outfits Incomplete")
+			local beforeOk, beforeCount = pcall(function() return countfurnitures(cd.get("house_interior").furniture) end)
+			if not beforeOk then return false end
+			local invokeOk, invokeErr = pcall(function()
+				return router.get("HousingAPI/BuyFurnitures"):InvokeServer(furniturest)
+			end)
+			if not invokeOk then
+				warn("BuyFurnitures failed:", invokeErr)
 				return false
 			end
+			local confirmed = false
+			local started = tick()
+			while tick() - started < 6 do
+				if stopFlag then return false end
+				local afterOk, afterCount = pcall(function() return countfurnitures(cd.get("house_interior").furniture) end)
+				if afterOk and afterCount - beforeCount >= #furniturest then confirmed = true break end
+				task.wait(0.35)
+			end
+			if not confirmed then
+				Rayfield:Notify({ Title = "Error", Content = "Furniture paste was not fully confirmed", Duration = 5, Image = "circle-alert" })
+				return false
+			end
+			applyRequestedOutfits(furniturest)
 		end
 
 		-- Activate furniture
@@ -3372,29 +3129,24 @@ local function loadMain()
 
 		local validFurniture = {}
 		local totalfurnitures = 0
-		local skippedLures, invalidPositions = 0, 0
 		for i, v in pairs(houseToPaste.furniture) do
 			if v.id == "lures_2023_cozy_home_lure" then
-				skippedLures += 1
+				warn("[SKIP] Skipping lure item:", v.id)
 				continue
 			end
 			if type(v.cframe) == "table" then
 				local ok, cf = pcall(function() return CFrame.new(table.unpack(v.cframe)) end)
 				if ok and cf then v.cframe = cf
-				else invalidPositions += 1 continue end
+				else warn("[SKIP] Could not convert cframe for:", v.id) continue end
 			end
 			if typeof(v.cframe) == "CFrame" then
 				validFurniture[i] = v
 				totalfurnitures += 1
 			else
-				invalidPositions += 1
+				warn("[SKIP] Missing or invalid cframe for:", v.id)
 			end
 		end
 
-		if skippedLures + invalidPositions > 0 then
-			warn("[Cubix Scan] Skipped " .. (skippedLures + invalidPositions) .. " item(s): "
-				.. skippedLures .. " excluded lure(s), " .. invalidPositions .. " invalid position(s).")
-		end
 		updateprog("0/" .. totalfurnitures)
 		updateitem("-")
 
@@ -3418,9 +3170,9 @@ local function loadMain()
 			local normalizedColors = {}
 			for ci, col in pairs(v.colors or {}) do
 				if typeof(col) == "Color3" then
-					normalizedColors[ci] = col
+					normalizedColors[tonumber(ci) or ci] = col
 				elseif type(col) == "table" then
-					normalizedColors[ci] = Color3.new(
+					normalizedColors[tonumber(ci) or ci] = Color3.new(
 						col[1] or col.R or col.r or 1,
 						col[2] or col.G or col.g or 1,
 						col[3] or col.B or col.b or 1
@@ -3456,10 +3208,8 @@ local function loadMain()
 				return false
 			end
 			if not placeFurnitures(furniturest, false) then return false end
-			if not applyRequestedOutfits(furniturest) then
-				updatestatus(stopFlag and "Stopped" or "Outfits Incomplete")
-				return false
-			end
+			task.wait(1)
+			applyRequestedOutfits(furniturest)
 		end
 
 		if stopFlag then
@@ -3616,13 +3366,11 @@ local function loadMain()
 		end
 		Rayfield:Notify({ Title = "Fixing", Content = "Attempting to place " .. #missing .. " missing items...", Duration = 5, Image = "loader" })
 		if not placeFurnitures(missing, true) then
-			updatestatus(stopFlag and "Stopped" or "Furniture Incomplete")
-			return false -- The purchase helper already reported the summary.
+			updatestatus("Idle") updateprog("-") updateitem("-")
+			return Rayfield:Notify({ Title = "Warning", Content = "Some missing items were not confirmed; no batch was resent to avoid duplicates.", Duration = 6, Image = "circle-alert" })
 		end
-		if not applyRequestedOutfits(missing) then
-			updatestatus(stopFlag and "Stopped" or "Outfits Incomplete")
-			return false
-		end
+		task.wait(1)
+		applyRequestedOutfits(missing)
 		if stopFlag then
 			updatestatus("Stopped") updateprog("-") updateitem("-")
 			return false
@@ -3679,11 +3427,7 @@ local function loadMain()
 					error(clearErr or "Could not clear house")
 				end
 				if stopFlag then return false end
-				if mode == "slow" then
-					return pastehouseslow(houseSnapshot)
-				else
-					return pastehousefast(houseSnapshot)
-				end
+				return (mode == "slow") and pastehouseslow(houseSnapshot) or pastehousefast(houseSnapshot)
 			end)
 			manualPasteRunning = false
 			if not ok then
@@ -4322,6 +4066,176 @@ local function loadMain()
 			Rayfield:Notify({ Title = "Refreshed", Content = "File list updated and sorted", Duration = 2 })
 		end,
 	})
+
+	-- ==================== CONVERTER TAB ====================
+	do
+		local ConverterTab = Window:CreateTab("Converter", "repeat")
+		local convertPath = houseFSPath .. "/Convert"
+		local sourceCloner = "Rage"
+		local selectedFile = nil
+		local outputName = ""
+		local busy = false
+		local sourceDropdown
+		local status = ConverterTab:CreateLabel("Put source JSON files in HouseFS/Convert, then refresh the list.", "info")
+
+		local function ensureFolders()
+			for _, path in ipairs({houseFSPath, convertPath, houseFilesPath}) do
+				if not isfolder(path) then makefolder(path) end
+			end
+		end
+
+		local function refreshSources()
+			local ok, err = pcall(function()
+				ensureFolders()
+				local options = {}
+				for _, path in ipairs(listfiles(convertPath)) do
+					local name = getBaseFileName(path)
+					if name:lower():sub(-5) == ".json" and isfile(convertPath .. "/" .. name) then
+						table.insert(options, name)
+					end
+				end
+				table.sort(options, naturalSort)
+				if not table.find(options, selectedFile) then selectedFile = options[1] end
+				sourceDropdown:Refresh(options)
+				sourceDropdown:Set(selectedFile and {selectedFile} or {})
+				status:Set("Source files: " .. #options .. " | Folder: HouseFS/Convert")
+			end)
+			if not ok then status:Set("Cannot read Convert folder: " .. tostring(err)) end
+		end
+
+		-- Validate before normalizing so a wrong selector or malformed file cannot
+		-- silently turn into an empty/partial saved house. No source code is executed.
+		local function convertSource(data, cloner)
+			local function requireValue(condition, message)
+				if not condition then error(message, 0) end
+			end
+			local function finite(value)
+				return type(value) == "number" and value == value and math.abs(value) < math.huge
+			end
+			local function array(value, length)
+				if type(value) ~= "table" or #value ~= length then return false end
+				local count = 0
+				for key in pairs(value) do
+					if type(key) ~= "number" or key % 1 ~= 0 or key < 1 or key > length then return false end
+					count = count + 1
+				end
+				return count == length
+			end
+			requireValue(type(data) == "table", "JSON must contain a house object.")
+			local items = cloner == "Rage" and data.furniture or data.furnitures
+			local houseType = cloner == "Rage" and data.building_type or data.buildingType
+			-- Explicit branches avoid Lua's and/or fallback when a field is missing.
+			if cloner == "Rage" then items = data.furniture; houseType = data.building_type end
+			requireValue(type(items) == "table", "This file does not match " .. cloner .. ". Check the Source Cloner selection.")
+			requireValue(type(houseType) == "string" and houseType:match("%S"), "Missing house type.")
+			if cloner == "TBI" then requireValue(array(items, #items), "TBI furniture must be a list.") end
+			local result = {furniture = {}, textures = {}, building_type = resolveExactHouseType(houseType), ambiance = data.ambiance}
+			local count, cost = 0, 0
+			for key, item in pairs(items) do
+				requireValue(type(item) == "table" and type(item.id) == "string" and item.id ~= "", "Invalid furniture ID at " .. tostring(key))
+				requireValue(array(item.cframe, 12), "Invalid CFrame for " .. item.id)
+				for _, value in ipairs(item.cframe) do requireValue(finite(value), "Invalid CFrame number for " .. item.id) end
+				requireValue(item.scale == nil or (finite(item.scale) and item.scale > 0), "Invalid scale for " .. item.id)
+				requireValue(item.colors == nil or type(item.colors) == "table", "Invalid colors for " .. item.id)
+				local converted = deepCopy(item)
+				converted.colors = {}
+				for channel, color in pairs(item.colors or {}) do
+					local index = tonumber(channel)
+					requireValue(index and index >= 1 and index % 1 == 0, "Invalid color index for " .. item.id)
+					requireValue(array(color, 3), "Invalid RGB color for " .. item.id)
+					for _, value in ipairs(color) do requireValue(finite(value) and value >= 0 and value <= 1, "RGB color outside 0-1 for " .. item.id) end
+					requireValue(converted.colors[index] == nil, "Duplicate color index for " .. item.id)
+					converted.colors[index] = color
+				end
+				-- Keep text, outfits, and all other furniture properties intact.
+				result.furniture[tostring(key)] = converted
+				count = count + 1
+				local db = furnituresdb[item.id]
+				cost = cost + (db and db.cost or 0)
+			end
+			requireValue(data.textures == nil or type(data.textures) == "table", "Invalid textures.")
+			if cloner == "TBI" then
+				local textures = data.textures or {}
+				requireValue(array(textures, #textures), "TBI textures must be a list.")
+				for _, entry in ipairs(textures) do
+					requireValue(type(entry) == "table" and type(entry.room) == "string" and type(entry.id) == "string", "Invalid TBI texture entry.")
+					requireValue(entry.type == "walls" or entry.type == "floors", "Unknown texture type.")
+					result.textures[entry.room] = result.textures[entry.room] or {}
+					requireValue(result.textures[entry.room][entry.type] == nil, "Duplicate texture for " .. entry.room)
+					result.textures[entry.room][entry.type] = entry.id
+				end
+			else
+				result.textures = deepCopy(data.textures or {})
+			end
+			for room, surfaces in pairs(result.textures) do
+				requireValue(type(room) == "string" and type(surfaces) == "table", "Invalid room textures.")
+				for surface, id in pairs(surfaces) do
+					requireValue((surface == "walls" or surface == "floors") and type(id) == "string", "Invalid texture in " .. room)
+					local db = texturesdb[surface] and texturesdb[surface][id]
+					cost = cost + (db and db.cost or 0)
+				end
+			end
+			requireValue(result.ambiance == nil or type(result.ambiance) == "table", "Invalid ambiance.")
+			result.furniture_quantity = count
+			result.total_cost = cost
+			result.saved_by = "Cubix-HouseCloner"
+			-- Use the same typed serialization as Save House to File.
+			return serializeAutoPasteValue(deserializeFileValue(result)), count
+		end
+
+		ConverterTab:CreateDropdown({
+			Name = "Source Cloner", Options = {"Rage", "TBI"}, CurrentOption = {"Rage"}, MultipleOptions = false,
+			Callback = function(value)
+				local choice = type(value) == "table" and value[1] or value
+				if choice == "Rage" or choice == "TBI" then sourceCloner = choice end
+			end,
+		})
+		sourceDropdown = ConverterTab:CreateDropdown({
+			Name = "File to Convert", Options = {}, CurrentOption = {}, MultipleOptions = false,
+			Callback = function(value) selectedFile = type(value) == "table" and value[1] or value end,
+		})
+		ConverterTab:CreateInput({
+			Name = "Save As (optional)", PlaceholderText = "Defaults to source filename", RemoveTextAfterFocusLost = false,
+			Callback = function(value) outputName = tostring(value or "") end,
+		})
+		ConverterTab:CreateButton({Name = "Refresh Convert Files", Callback = refreshSources})
+		ConverterTab:CreateButton({Name = "Convert & Save", Callback = function()
+			if busy then return end
+			if not selectedFile or selectedFile == "" then
+				return Rayfield:Notify({Title = "Converter", Content = "Put a JSON file in HouseFS/Convert, refresh, and select it.", Duration = 5})
+			end
+			busy = true
+			local ok, filename, count = pcall(function()
+				ensureFolders()
+				local sourceName = getBaseFileName(selectedFile)
+				local raw = readfile(convertPath .. "/" .. sourceName)
+				local decoded = HttpService:JSONDecode(raw)
+				local converted, itemCount = convertSource(decoded, sourceCloner)
+				local encoded = HttpService:JSONEncode(converted)
+				local base = sanitizeFileName(outputName:match("%S") and outputName or sourceName)
+				if not base then error("Enter a valid output filename.", 0) end
+				local name, suffix = base .. ".json", 2
+				while isfile(houseFilesPath .. "/" .. name) do
+					name = base .. " (" .. suffix .. ").json"
+					suffix = suffix + 1
+				end
+				local path = houseFilesPath .. "/" .. name
+				writefile(path, encoded)
+				if readfile(path) ~= encoded then error("Saved file verification failed: " .. name, 0) end
+				return name, itemCount
+			end)
+			busy = false
+			if not ok then
+				status:Set("Conversion failed: " .. tostring(filename))
+				return Rayfield:Notify({Title = "Conversion Failed", Content = tostring(filename), Duration = 7})
+			end
+			local refreshed = pcall(refreshFileDropdown)
+			status:Set("Saved " .. filename .. " | " .. count .. " furniture items")
+			Rayfield:Notify({Title = "Converted & Saved", Content = "HouseFS/Houses/" .. filename .. (refreshed and "\nAvailable in Saved Houses and Auto Paste." or "\nUse Refresh List to update Saved Houses."), Duration = 6})
+		end})
+		refreshSources()
+	end
+
 
 	-- ==================== TELEPORT TAB ====================
 	local Teleport = Window:CreateTab("Teleport", "map-pin")
