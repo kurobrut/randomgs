@@ -1349,11 +1349,58 @@ local function loadMain()
 	local function teleportToHouse(houseId)
 		local ok, err = pcall(function()
 			local interiors = Fsys("InteriorsM")
-			-- SpawnHouse selects the exact owned house. Entry itself uses the normal
-			-- owner form; waitUntilInsideHouse strictly verifies house_id afterward.
+			-- The exact house is selected with SpawnHouse BEFORE this function is called.
+			-- Entry uses the normal owner form, then waitUntilInsideHouse verifies house_id.
 			interiors.enter("housing", "MainDoor", { house_owner = Players.LocalPlayer })
 		end)
 		return ok, err
+	end
+
+	local function loadHouseBeforeEntering(houseId, houseName, safetyCheck)
+		local maxAttempts = 3
+
+		for attempt = 1, maxAttempts do
+			if stopFlag or not autoPasteRunning then
+				return false, "Stopped"
+			end
+			if safetyCheck and not safetyCheck() then
+				return false, "Safety stop"
+			end
+
+			setAPStatus("Loading house")
+			Rayfield:Notify({
+				Title = "Auto Paste",
+				Content = "Loading house first: " .. tostring(houseName)
+					.. (attempt > 1 and (" (attempt " .. attempt .. "/" .. maxAttempts .. ")") or ""),
+				Duration = 3,
+			})
+
+			local spawnOk, spawnErr = pcall(function()
+				router.get("HousingAPI/SpawnHouse"):FireServer(houseId)
+			end)
+
+			if spawnOk then
+				-- SpawnHouse is a FireServer call, so give the server/client time to make
+				-- this exact owned house the active exterior BEFORE trying to enter it.
+				local loadStarted = tick()
+				while tick() - loadStarted < 4 do
+					if stopFlag or not autoPasteRunning then
+						return false, "Stopped"
+					end
+					if safetyCheck and not safetyCheck() then
+						return false, "Safety stop"
+					end
+					task.wait(0.25)
+				end
+
+				return true
+			end
+
+			warn("[Auto Paste] SpawnHouse attempt " .. attempt .. " failed: " .. tostring(spawnErr))
+			task.wait(1)
+		end
+
+		return false, "Failed to load/spawn house after " .. maxAttempts .. " attempts"
 	end
 
 	local function exitCurrentHouse()
@@ -1472,28 +1519,66 @@ local function loadMain()
 		end
 
 		if not checkTargetName() then return false end
-		local spawnOk, spawnErr = pcall(function()
-			router.get("HousingAPI/SpawnHouse"):FireServer(houseId)
-		end)
-		if not spawnOk then
-			Rayfield:Notify({ Title = "Auto Paste", Content = "Failed to spawn " .. houseName .. ": " .. tostring(spawnErr), Duration = 5 })
-			return false
-		end
-		task.wait(2)
 
-		Rayfield:Notify({ Title = "Auto Paste", Content = "Entering: " .. houseName, Duration = 3 })
-		local enterOk, enterErr = teleportToHouse(houseId)
-		if not enterOk then
-			Rayfield:Notify({ Title = "Auto Paste", Content = "Failed to enter " .. houseName .. ": " .. tostring(enterErr), Duration = 5 })
+		-- IMPORTANT: load/spawn the exact selected house completely BEFORE entering.
+		local loaded, loadErr = loadHouseBeforeEntering(houseId, houseName, checkTargetName)
+		if not loaded then
+			Rayfield:Notify({
+				Title = "Auto Paste",
+				Content = "Could not load " .. houseName .. ": " .. tostring(loadErr),
+				Duration = 5,
+			})
 			return false
 		end
 
-		local inside = waitUntilInsideHouse(houseId, 20)
+		-- If Roblox is still on another interior for any reason, leave it first.
+		local currentInterior = nil
+		pcall(function() currentInterior = cd.get("house_interior") end)
+		if currentInterior and tostring(currentInterior.house_id) ~= tostring(houseId) then
+			exitCurrentHouse()
+			task.wait(1)
+		end
+
+		setAPStatus("Entering house")
+		Rayfield:Notify({ Title = "Auto Paste", Content = "Entering loaded house: " .. houseName, Duration = 3 })
+
+		local inside = false
+		local lastEnterErr = nil
+		for enterAttempt = 1, 3 do
+			if stopFlag or not autoPasteRunning or not checkTargetName() then break end
+
+			local enterOk, enterErr = teleportToHouse(houseId)
+			lastEnterErr = enterErr
+			if enterOk and waitUntilInsideHouse(houseId, 12) then
+				inside = true
+				break
+			end
+
+			-- Wrong/not-ready entry: leave, reload the SAME house, and try again.
+			exitCurrentHouse()
+			task.wait(1)
+			if enterAttempt < 3 then
+				local reloaded, reloadErr = loadHouseBeforeEntering(houseId, houseName, checkTargetName)
+				if not reloaded then
+					lastEnterErr = reloadErr
+					break
+				end
+			end
+		end
+
 		if not inside then
-			Rayfield:Notify({ Title = "Auto Paste", Content = "Could not verify entry into " .. houseName .. ", skipping", Duration = 5 })
+			Rayfield:Notify({
+				Title = "Auto Paste",
+				Content = "Could not verify the exact loaded house " .. houseName
+					.. ". Nothing was cleared or pasted."
+					.. (lastEnterErr and ("\n" .. tostring(lastEnterErr)) or ""),
+				Duration = 6,
+			})
 			exitCurrentHouse()
 			return false
 		end
+
+		setAPStatus("Preparing paste")
 
 		local actualType = getCurrentHouseType()
 		if actualType then ownedHouseTypeMap[houseId] = actualType end
