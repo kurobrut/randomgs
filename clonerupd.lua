@@ -401,6 +401,7 @@ local function loadMain()
 	local getPlayers
 	local autoPasteMode = "fast"
 	local autoPasteSource = "loaded"
+	local autoPasteKaliremEnabled = false
 	local autoPasteSingleFile = false
 	local fileQueue = {}
 	local fqAllFiles = {}
@@ -892,6 +893,7 @@ local function loadMain()
 			source = autoPasteSource,
 			singleFileMode = autoPasteSingleFile,
 			pasteMode = autoPasteMode,
+			autoPasteKaliremEnabled = autoPasteKaliremEnabled,
 			queueCopies = autoPasteQueueCopies,
 			pastebinValue = autoPastePastebinValue,
 			targetHouseIds = targetIds,
@@ -942,6 +944,7 @@ local function loadMain()
 		autoPasteSource = config.source == "filequeue" and "filequeue" or "loaded"
 		autoPasteSingleFile = config.singleFileMode == true
 		autoPasteMode = config.pasteMode == "slow" and "slow" or "fast"
+		autoPasteKaliremEnabled = config.autoPasteKaliremEnabled == true
 		autoPasteQueueCopies = math.clamp(math.floor(tonumber(config.queueCopies) or 1), 1, 50)
 		autoPastePastebinValue = tostring(config.pastebinValue or "")
 		selectedPlayer = type(config.autoAcceptPlayer) == "string" and config.autoAcceptPlayer or nil
@@ -1263,6 +1266,71 @@ local function loadMain()
 	})
 
 	AutoPasteTab:CreateSection("Target Houses")
+
+	local function selectAvailableKaliremTargets()
+		refreshOwnedHouses()
+
+		local added = 0
+		local manager = {}
+		pcall(function()
+			manager = ClientData.get("house_manager") or {}
+		end)
+
+		for _, house in pairs(manager) do
+			if type(house) == "table" and house.house_id ~= nil then
+				local houseName = tostring(house.name or "")
+				if string.lower(houseName):match("^%s*kalirem") then
+					local label = ownedHouseLabelById[house.house_id]
+						or (houseName ~= "" and houseName)
+						or ("Kalirem [" .. tostring(house.house_id) .. "]")
+
+					if not autoPasteSelections[house.house_id] then
+						added += 1
+					end
+					autoPasteSelections[house.house_id] = label
+				end
+			end
+		end
+
+		-- Make the automatic targets visibly selected in the Rayfield dropdown too.
+		if autoPasteDropdown then
+			autoPasteApplyingSavedTargets = true
+			pcall(function()
+				autoPasteDropdown:Refresh(ownedHouseList, true)
+				autoPasteDropdown:Set(getAutoPasteTargetNames())
+			end)
+			autoPasteApplyingSavedTargets = false
+		end
+
+		autoSaveAutoPasteConfig()
+		return added
+	end
+
+	AutoPasteTab:CreateToggle({
+		Name = "Auto Paste Kalirem Houses",
+		CurrentValue = false,
+		Flag = "AutoPasteKaliremHouses",
+		Callback = function(value)
+			autoPasteKaliremEnabled = value == true
+
+			local added = 0
+			if autoPasteKaliremEnabled then
+				added = selectAvailableKaliremTargets()
+			else
+				autoSaveAutoPasteConfig()
+			end
+
+			if autoPasteConfigReady then
+				Rayfield:Notify({
+					Title = "Auto Paste",
+					Content = autoPasteKaliremEnabled
+						and ("Selected " .. tostring(added) .. " new Kalirem house(s) in the target dropdown.")
+						or "Automatic Kalirem targeting disabled.",
+					Duration = 3,
+				})
+			end
+		end,
+	})
 
 	autoPasteDropdown = AutoPasteTab:CreateDropdown({
 		Name = "Select Houses to Paste Into",
@@ -1653,6 +1721,58 @@ local function loadMain()
 		return true
 	end
 
+	local function isAutoPasteKaliremName(name)
+		return string.lower(tostring(name or "")):match("^%s*kalirem") ~= nil
+	end
+
+	local function buildAutoPasteCandidateIds()
+		local ids = {}
+		local seen = {}
+
+		-- Keep manually selected target houses.
+		for id in pairs(autoPasteSelections) do
+			local key = tostring(id)
+			if not seen[key] then
+				seen[key] = true
+				table.insert(ids, id)
+			end
+		end
+
+		-- Optional live Kalirem discovery. This means a Kalirem house does not have
+		-- to be manually ticked in the dropdown. It only needs to currently exist
+		-- in house_manager when Auto Paste starts.
+		if autoPasteKaliremEnabled then
+			local manager = {}
+			pcall(function()
+				manager = ClientData.get("house_manager") or {}
+			end)
+
+			for _, house in pairs(manager) do
+				if type(house) == "table" and house.house_id ~= nil and isAutoPasteKaliremName(house.name) then
+					local key = tostring(house.house_id)
+					if not seen[key] then
+						seen[key] = true
+						autoPasteSelections[house.house_id] = tostring(house.name or ("Kalirem [" .. key .. "]"))
+						table.insert(ids, house.house_id)
+					end
+				end
+			end
+		end
+
+		table.sort(ids, function(a, b)
+			local an = tostring(autoPasteSelections[a] or a)
+			local bn = tostring(autoPasteSelections[b] or b)
+			local ai = tonumber(an:match("[Kk][Aa][Ll][Ii][Rr][Ee][Mm]%s*(%d+)"))
+			local bi = tonumber(bn:match("[Kk][Aa][Ll][Ii][Rr][Ee][Mm]%s*(%d+)"))
+			if ai and bi and ai ~= bi then return ai < bi end
+			if ai and not bi then return true end
+			if bi and not ai then return false end
+			return string.lower(an) < string.lower(bn)
+		end)
+
+		return ids
+	end
+
 	AutoPasteTab:CreateButton({
 		Name = "Start Auto Paste Queue",
 		Callback = function()
@@ -1684,16 +1804,30 @@ local function loadMain()
 				})
 			end
 
-			local candidateIds = {}
-			for id, _ in pairs(autoPasteSelections) do
-				table.insert(candidateIds, id)
-			end
+			refreshOwnedHouses()
+			local candidateIds = buildAutoPasteCandidateIds()
 
 			if #candidateIds == 0 then
 				return Rayfield:Notify({
 					Title = "Auto Paste",
-					Content = "No houses selected.\nUse Refresh then select houses from dropdown.",
+					Content = autoPasteKaliremEnabled
+						and "No selected houses and no Kalirem house is currently available."
+						or "No houses selected.\nUse Refresh then select houses from dropdown.",
 					Duration = 5,
+				})
+			end
+
+			if autoPasteKaliremEnabled then
+				local kaliremCount = 0
+				for _, houseId in ipairs(candidateIds) do
+					if isAutoPasteKaliremName(autoPasteSelections[houseId]) then
+						kaliremCount += 1
+					end
+				end
+				Rayfield:Notify({
+					Title = "Auto Paste",
+					Content = "Found " .. kaliremCount .. " Kalirem target house(s).",
+					Duration = 3,
 				})
 			end
 
