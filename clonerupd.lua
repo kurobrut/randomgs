@@ -1,4 +1,3 @@
--- // Services and modules
 if not game:IsLoaded() then
 	game.Loaded:Wait()
 end
@@ -25,9 +24,6 @@ while not plr do
 	plr = Players.LocalPlayer
 end
 
---==================================================
--- JSON Helpers
---==================================================
 local function lEncode(t)
 	return HttpService:JSONEncode(t)
 end
@@ -51,7 +47,6 @@ local function loadMain()
 		error("Failed to initialize Rayfield: " .. tostring(Rayfield))
 	end
 
-	-- V2 uses unique control flags + a separate config file to avoid stale Rayfield dropdown keys.
 	local Window = Rayfield:CreateWindow({
 		Name = "Cubix . House Cloner ",
 		LoadingTitle = "Cubix",
@@ -59,7 +54,7 @@ local function loadMain()
 		Theme = "Amethyst",
 		ConfigurationSaving = {
 			Enabled = true,
-			FileName = "CubixAutoPasteV2",
+			FileName = "CubixAutoPasteV3",
 		},
 		Discord = {
 			Enabled = true,
@@ -69,9 +64,8 @@ local function loadMain()
 	})
 
 	local savedhouse = nil
-	local stopFlag = false  -- single declaration
+	local stopFlag = false
 
-	-- Forward-declare paste functions so Auto Paste tab can reference them
 	local pastehousefast
 	local pastehouseslow
 	local IgnoreTypeCheck
@@ -98,7 +92,6 @@ local function loadMain()
 	local BuyerTab = Window:CreateTab("House Buyer", "shopping-bag")
 	local TradeTab = Window:CreateTab("Trading", "repeat")
 
-	-- ==================== MANAGER TAB ====================
 	Manager:CreateSection("Scan Information")
 	local furniture_label = Manager:CreateLabel("House Furniture: 0 ($0)", "armchair")
 	local textures_label = Manager:CreateLabel("House Textures: 0 ($0)", "grid-2x2")
@@ -116,7 +109,7 @@ local function loadMain()
 			return gethui and gethui()
 		end)
 		if success and hui then return hui end
-		-- PlayerGui is safer than CoreGui when the executor does not have CoreGui write capability.
+
 		return plr:WaitForChild("PlayerGui")
 	end
 
@@ -234,16 +227,15 @@ local function loadMain()
 	updateprog("-")
 	updateitem("-")
 
-	-- ==================== SHARED OWNED HOUSES SYSTEM ====================
 	local ownedHouseList = {}
-	local ownedHouseMap = {} -- unique display label → house_id
-	local ownedHouseLabelById = {} -- house_id → unique display label
-	local ownedHouseTypeMap = {} -- house_id → resolved house type
+	local ownedHouseMap = {}
+	local ownedHouseLabelById = {}
+	local ownedHouseTypeMap = {}
 	local ownedDropdown
 	local tradeDropdown
 	local autoPasteDropdown
-	local autoPasteSelections = {} -- { [house_id] = display_label }
-	local pendingAutoPasteTargetIds = {} -- saved IDs waiting for house_manager to populate
+	local autoPasteSelections = {}
+	local pendingAutoPasteTargetIds = {}
 	local restorePendingAutoPasteTargets
 	local autoPasteApplyingSavedTargets = false
 
@@ -372,19 +364,18 @@ local function loadMain()
 					if label then table.insert(selectedLabels, label) end
 				end
 				table.sort(selectedLabels)
-				autoPasteDropdown:Set(selectedLabels)
+				if #selectedLabels > 0 then
+					autoPasteDropdown:Set(selectedLabels)
+				end
 			end)
 			autoPasteApplyingSavedTargets = false
 		end
 
-		-- Saved target IDs may be loaded before ClientData has populated
-		-- house_manager. Resolve them automatically whenever the house list changes.
 		if restorePendingAutoPasteTargets then
 			restorePendingAutoPasteTargets(true)
 		end
 	end
 
-	-- ==================== AUTO PASTE TAB ====================
 	local AutoPasteTab = Window:CreateTab("Auto Paste", "copy")
 
 	local autoPasteRunning = false
@@ -402,8 +393,7 @@ local function loadMain()
 	local getPlayers
 	local autoPasteMode = "fast"
 	local autoPasteSource = "loaded"
-	-- Keep Auto-Kalirem runtime state/helpers in ONE local table.
-	-- This avoids pushing the already-large loadMain() over Luau's local/register limit.
+
 	local kaliremAP = {
 		enabled = false,
 		toggle = nil,
@@ -427,7 +417,6 @@ local function loadMain()
 	local autoPasteConfigReady = false
 	local autoPasteSaveState = { pending = false, dirty = false, lastError = nil }
 
-
 	local houseFSPath = "HouseFS"
 	local houseSettingsPath = houseFSPath .. "/settings"
 	local houseFilesPath = houseFSPath .. "/Houses"
@@ -447,12 +436,9 @@ local function loadMain()
 		end
 	end)
 
-
 	local function deserializeFileValue(value, context)
 		if type(value) ~= "table" then return value end
 
-		-- JSON object keys are strings. Housing color channels must be numeric,
-		-- including sparse channels, so rebuild rather than mutate during pairs().
 		if context == "colors" then
 			local colors = {}
 			for key, color in pairs(value) do
@@ -465,7 +451,6 @@ local function loadMain()
 			return colors
 		end
 
-		-- New files use explicit type tags so Vector3 and Color3 are never ambiguous.
 		if value.__type == "CFrame" then
 			local components = value.components or value.c or {}
 			return CFrame.new(table.unpack(components))
@@ -475,9 +460,6 @@ local function loadMain()
 			return Color3.new(value.r or value.R or 0, value.g or value.G or 0, value.b or value.B or 0)
 		end
 
-		-- Backward compatibility with old HouseFS files. Raw 12-number arrays are CFrames.
-		-- Raw 3-number arrays are only treated as colors when their parent is known to be
-		-- a color container; otherwise they stay arrays instead of being misread as Color3.
 		if context ~= "preserve" and #value > 0 then
 			if #value == 12 and type(value[1]) == "number" then
 				return CFrame.new(table.unpack(value))
@@ -654,7 +636,6 @@ local function loadMain()
 			return nil, "Please enter a Pastebin link or ID"
 		end
 
-		-- Support a paste ID alone, a normal link, and a /raw/ link.
 		local pasteId = input:match("^[Hh][Tt][Tt][Pp][Ss]?://[^/]*pastebin%.com/raw/([^/?#]+)")
 			or input:match("^[Hh][Tt][Tt][Pp][Ss]?://[^/]*pastebin%.com/([^/?#]+)")
 			or input:match("^[Ww][Ww][Ww]%.pastebin%.com/raw/([^/?#]+)")
@@ -804,8 +785,6 @@ local function loadMain()
 			end
 		end
 
-		-- Refresh labels for already-selected IDs too (important after renames or
-		-- duplicate-name disambiguation changes).
 		for houseId in pairs(autoPasteSelections) do
 			local label = ownedHouseLabelById[houseId]
 			if label then autoPasteSelections[houseId] = label end
@@ -813,16 +792,19 @@ local function loadMain()
 
 		if updateDropdown and restored > 0 and autoPasteDropdown then
 			autoPasteApplyingSavedTargets = true
-			pcall(function() autoPasteDropdown:Set(getAutoPasteTargetNames()) end)
+			pcall(function()
+				local selected = getAutoPasteTargetNames()
+				if #selected > 0 then
+					autoPasteDropdown:Set(selected)
+				else
+					autoPasteDropdown:Refresh(ownedHouseList, true)
+				end
+			end)
 			autoPasteApplyingSavedTargets = false
 		end
 		return restored
 	end
 
-	-- Queue entries contain Roblox values (such as CFrame and Color3) that JSON
-	-- cannot store directly. Convert them into explicit typed tables and also
-	-- normalize dictionary keys so HttpService:JSONEncode never receives a
-	-- mixed-key table.
 	local function serializeAutoPasteValue(value, seen)
 		local valueType = typeof(value)
 		if valueType == "CFrame" then
@@ -902,7 +884,7 @@ local function loadMain()
 			source = autoPasteSource,
 			singleFileMode = autoPasteSingleFile,
 			pasteMode = autoPasteMode,
-			autoPasteKaliremEnabled = kaliremAP.enabled,
+			autoPasteKaliremEnabled = false,
 			queueCopies = autoPasteQueueCopies,
 			pastebinValue = autoPastePastebinValue,
 			targetHouseIds = targetIds,
@@ -953,12 +935,12 @@ local function loadMain()
 		autoPasteSource = config.source == "filequeue" and "filequeue" or "loaded"
 		autoPasteSingleFile = config.singleFileMode == true
 		autoPasteMode = config.pasteMode == "slow" and "slow" or "fast"
-		kaliremAP.enabled = config.autoPasteKaliremEnabled == true
+		kaliremAP.enabled = false
 		autoPasteQueueCopies = math.clamp(math.floor(tonumber(config.queueCopies) or 1), 1, 50)
 		autoPastePastebinValue = tostring(config.pastebinValue or "")
 		selectedPlayer = type(config.autoAcceptPlayer) == "string" and config.autoAcceptPlayer or nil
 		autoTradeEnabled = config.autoAcceptEnabled == true
-		autoBuyQueuedEnabled = false -- always start disabled; do not restore from saved config
+		autoBuyQueuedEnabled = false
 
 		table.clear(autoPasteSelections)
 		table.clear(pendingAutoPasteTargetIds)
@@ -975,7 +957,13 @@ local function loadMain()
 		setAutoPasteSource(autoPasteSource)
 		if autoPasteDropdown then
 			autoPasteApplyingSavedTargets = true
-			pcall(function() autoPasteDropdown:Set(getAutoPasteTargetNames()) end)
+			pcall(function()
+				local selected = getAutoPasteTargetNames()
+				autoPasteDropdown:Refresh(ownedHouseList, true)
+				if #selected > 0 then
+					autoPasteDropdown:Set(selected)
+				end
+			end)
 			autoPasteApplyingSavedTargets = false
 		end
 		autoPasteApplyingSavedTargets = true
@@ -998,10 +986,7 @@ local function loadMain()
 	end
 
 	local function autoSaveAutoPasteConfig()
-		-- Queue, target houses, selected player, and Auto Accept are persistent
-		-- session state. Never discard their save request, even while Auto Paste
-		-- is running. A tiny debounce coalesces callbacks that fire in the same
-		-- frame, then the complete latest state is written to disk.
+
 		autoPasteSaveState.dirty = true
 		if not autoPasteConfigReady then return end
 		if autoPasteSaveState.pending then return end
@@ -1282,7 +1267,10 @@ local function loadMain()
 			autoPasteApplyingSavedTargets = true
 			pcall(function()
 				autoPasteDropdown:Refresh(ownedHouseList, true)
-				autoPasteDropdown:Set(getAutoPasteTargetNames())
+				local selected = getAutoPasteTargetNames()
+				if #selected > 0 then
+					autoPasteDropdown:Set(selected)
+				end
 			end)
 			autoPasteApplyingSavedTargets = false
 		end
@@ -1320,7 +1308,6 @@ local function loadMain()
 			end
 		end
 
-		-- Once a completed house actually disappears, forget the completed ID.
 		for key in pairs(kaliremAP.completed) do
 			if not liveIds[key] then
 				kaliremAP.completed[key] = nil
@@ -1371,8 +1358,8 @@ local function loadMain()
 			Rayfield:Notify({
 				Title = "Auto Paste",
 				Content = value
-					and ("Auto-enabled: selected " .. tostring(added) .. " new Kalirem house(s).")
-					or "Auto-disabled: no available Kalirem houses.",
+					and ("Enabled: selected " .. tostring(added) .. " new Kalirem house(s).")
+					or "Disabled Auto Paste Kalirem.",
 				Duration = 3,
 			})
 		end
@@ -1420,45 +1407,51 @@ local function loadMain()
 		end,
 	})
 
-	-- Automatically enable when an unprocessed Kalirem house is available,
-	-- and disable when none are available. The dropdown is kept in sync too.
 	task.spawn(function()
 		while task.wait(1.5) do
 			local manager = {}
-			pcall(function() manager = ClientData.get("house_manager") or {} end)
+			pcall(function()
+				manager = ClientData.get("house_manager") or {}
+			end)
 
 			local available = 0
 			local liveIds = {}
+
 			for _, house in pairs(manager) do
 				if type(house) == "table" and house.house_id ~= nil then
 					local key = tostring(house.house_id)
 					liveIds[key] = true
-					if string.lower(tostring(house.name or "")):match("^%s*kalirem") and not kaliremAP.completed[key] then
+
+					if string.lower(tostring(house.name or "")):match("^%s*kalirem")
+						and not kaliremAP.completed[key]
+					then
 						available += 1
 					end
 				end
 			end
 
 			for key in pairs(kaliremAP.completed) do
-				if not liveIds[key] then kaliremAP.completed[key] = nil end
+				if not liveIds[key] then
+					kaliremAP.completed[key] = nil
+				end
 			end
 
-			if available > 0 then
-				if not kaliremAP.enabled then
-					kaliremAP.setToggle(true, true)
-				else
+			if kaliremAP.enabled then
+				if available > 0 then
+
 					kaliremAP.selectAvailable()
+				else
+
+					kaliremAP.setToggle(false, true)
 				end
-			elseif kaliremAP.enabled then
-				kaliremAP.setToggle(false, true)
 			end
-		end
+	end
 	end)
 
 	AutoPasteTab:CreateButton({
 		Name = "Refresh House List",
 		Callback = function()
-			-- Refresh available houses without destroying the saved target IDs.
+
 			refreshOwnedHouses()
 			restorePendingAutoPasteTargets(true)
 			autoSaveAutoPasteConfig()
@@ -1511,8 +1504,7 @@ local function loadMain()
 	local function teleportToHouse(houseId)
 		local ok, err = pcall(function()
 			local interiors = Fsys("InteriorsM")
-			-- The exact house is selected with SpawnHouse BEFORE this function is called.
-			-- Entry uses the normal owner form, then waitUntilInsideHouse verifies house_id.
+
 			interiors.enter("housing", "MainDoor", { house_owner = Players.LocalPlayer })
 		end)
 		return ok, err
@@ -1542,8 +1534,7 @@ local function loadMain()
 			end)
 
 			if spawnOk then
-				-- SpawnHouse is a FireServer call, so give the server/client time to make
-				-- this exact owned house the active exterior BEFORE trying to enter it.
+
 				local loadStarted = tick()
 				while tick() - loadStarted < 4 do
 					if stopFlag or not autoPasteRunning then
@@ -1585,7 +1576,12 @@ local function loadMain()
 				table.insert(selectedNames, name)
 			end
 			table.sort(selectedNames)
-			pcall(function() autoPasteDropdown:Set(selectedNames) end)
+			pcall(function()
+				autoPasteDropdown:Refresh(ownedHouseList, true)
+				if #selectedNames > 0 then
+					autoPasteDropdown:Set(selectedNames)
+				end
+			end)
 		end
 		autoSaveAutoPasteConfig()
 	end
@@ -1637,7 +1633,7 @@ local function loadMain()
 	local function pasteIntoHouse(houseId, houseName, houseData, mode, expectedType)
 		local mutationStarted = false
 		local safetyStopped = false
-		-- Use live data by ID; dropdown names may be stale after filtering.
+
 		local function checkTargetName()
 			if safetyStopped or stopFlag or not autoPasteRunning then return false end
 			local ok, manager = pcall(function()
@@ -1682,7 +1678,6 @@ local function loadMain()
 
 		if not checkTargetName() then return false end
 
-		-- IMPORTANT: load/spawn the exact selected house completely BEFORE entering.
 		local loaded, loadErr = kaliremAP.loadHouseBeforeEntering(houseId, houseName, checkTargetName)
 		if not loaded then
 			Rayfield:Notify({
@@ -1693,7 +1688,6 @@ local function loadMain()
 			return false
 		end
 
-		-- If Roblox is still on another interior for any reason, leave it first.
 		local currentInterior = nil
 		pcall(function() currentInterior = cd.get("house_interior") end)
 		if currentInterior and tostring(currentInterior.house_id) ~= tostring(houseId) then
@@ -1716,7 +1710,6 @@ local function loadMain()
 				break
 			end
 
-			-- Wrong/not-ready entry: leave, reload the SAME house, and try again.
 			exitCurrentHouse()
 			task.wait(1)
 			if enterAttempt < 3 then
@@ -1760,7 +1753,6 @@ local function loadMain()
 			return "type_mismatch"
 		end
 
-		-- Spawning/teleporting yields: recheck immediately before selling furniture.
 		if not checkTargetName() then
 			exitCurrentHouse()
 			return false
@@ -1778,7 +1770,6 @@ local function loadMain()
 			return false
 		end
 
-		-- Poll while InvokeServer is yielding; checks at each action also catch changes.
 		local monitoring = true
 		task.spawn(function()
 			while monitoring do
@@ -1812,8 +1803,6 @@ local function loadMain()
 		task.wait(2)
 		if not checkTargetName() then return false end
 
-		-- A successfully pasted Kalirem target must not be immediately re-added
-		-- by the automatic watcher while it is still present in house_manager.
 		if string.lower(tostring(houseName or "")):match("^%s*kalirem") then
 			kaliremAP.completed[tostring(houseId)] = true
 			kaliremAP.autoSelected[tostring(houseId)] = nil
@@ -1830,7 +1819,6 @@ local function loadMain()
 		local ids = {}
 		local seen = {}
 
-		-- Keep manually selected target houses.
 		for id in pairs(autoPasteSelections) do
 			local key = tostring(id)
 			if not seen[key] then
@@ -1839,9 +1827,6 @@ local function loadMain()
 			end
 		end
 
-		-- Optional live Kalirem discovery. This means a Kalirem house does not have
-		-- to be manually ticked in the dropdown. It only needs to currently exist
-		-- in house_manager when Auto Paste starts.
 		if kaliremAP.enabled then
 			local manager = {}
 			pcall(function()
@@ -1999,8 +1984,6 @@ local function loadMain()
 								end
 							end
 
-							-- Keep the entry if the run was stopped or no target matched;
-							-- it can be continued after selecting compatible houses.
 							if completed and #matchingHouses > 0 then
 								table.remove(fileQueue, 1)
 								rebuildQueueLabel()
@@ -2067,8 +2050,7 @@ local function loadMain()
 					Rayfield:Notify({ Title = "Auto Paste", Content = "Auto paste finished", Duration = 5 })
 				end
 				if autoListAfterPaste and not wasStopped then
-					-- The Auto Trade worker is persistent. Calling this again is safe:
-					-- it either starts the watcher or leaves the existing watcher running.
+
 					processAutoList()
 				end
 			end)
@@ -2089,7 +2071,6 @@ local function loadMain()
 
 	refreshFQFileList()
 
-	-- ==================== HOUSE BUYER TAB ====================
 	local selectedHouseKinds = {}
 	local selectedHouseId = nil
 	local autoBuy = false
@@ -2167,9 +2148,6 @@ local function loadMain()
 				return true
 			end
 
-			-- A nil/false/zero timeout means wait indefinitely. This is used by
-			-- Auto Paste -> Auto Trade so a listed Kalirem house is never skipped
-			-- just because nobody accepted it within an arbitrary time window.
 			if timeout and timeout > 0 and tick() - started >= timeout then
 				return false, "timeout"
 			end
@@ -2265,14 +2243,12 @@ local function loadMain()
 				for _, entry in ipairs(fileQueue) do
 					local houseType = getFileHouseType(entry.houseData)
 
-					-- Convert known display name to database kind
 					if houseType == "Tiny Home" then
 						houseType = "micro_2023"
 					end
 
 					local buyKind = nil
 
-					-- Find the actual purchasable HouseDB kind
 					for dbKind, data in pairs(HouseDB) do
 						if type(data) ~= "table" then
 							continue
@@ -2317,10 +2293,6 @@ local function loadMain()
 						})
 					end
 				end
-
-				-- ==========================================
-				-- BUY EXACTLY WHAT IS IN THE QUEUE
-				-- ==========================================
 
 				local totalRequired = 0
 
@@ -2385,7 +2357,6 @@ local function loadMain()
 								Duration = 4,
 							})
 
-							-- Stop this purchase type if Roblox rejects it
 							break
 						end
 
@@ -2407,8 +2378,6 @@ local function loadMain()
 
 			autoBuyQueuedRunning = false
 
-			-- One-shot toggle: after this queued-house buy run finishes (or errors),
-			-- always return Auto Buy Queued Houses to OFF and persist that state.
 			autoBuyQueuedEnabled = false
 			if autoBuyQueuedToggle then
 				pcall(function() autoBuyQueuedToggle:Set(false) end)
@@ -2489,7 +2458,6 @@ local function loadMain()
 		end,
 	})
 
-	-- ==================== TRADING TAB ====================
 	local tradingRunning = false
 	local tradeSelections = {}
 	local lastTradeCount = -1
@@ -2558,7 +2526,6 @@ local function loadMain()
 					Duration = 3
 				})
 
-				-- 1. Spawn the house first
 				local spawnSuccess = pcall(function()
 					Router.get("HousingAPI/SpawnHouse"):FireServer(id)
 				end)
@@ -2570,7 +2537,6 @@ local function loadMain()
 					continue
 				end
 
-				-- 2. Give the server/client time to finish spawning it
 				task.wait(5)
 
 				Rayfield:Notify({
@@ -2579,7 +2545,6 @@ local function loadMain()
 					Duration = 3
 				})
 
-				-- 3. List the house AFTER the delay
 				local listSuccess = pcall(function()
 					Router.get("HousingAPI/ListHouse"):InvokeServer(id)
 				end)
@@ -2591,7 +2556,6 @@ local function loadMain()
 					continue
 				end
 
-				-- 4. Wait for the house to disappear / trade
 				if waitUntilHouseGone(id, 300, function() return tradingRunning end) then
 					Rayfield:Notify({
 						Title = "Trading",
@@ -2614,21 +2578,17 @@ local function loadMain()
 
 	local function isKaliremHouseName(name)
 		local lowered = string.lower(tostring(name or ""))
-		-- Match every owned house whose name starts with "Kalirem".
-		-- This includes Kalirem, Kalirem 1, Kalirem House, etc.
+
 		return lowered:match("^%s*kalirem") ~= nil
 	end
 
-	-- Auto Paste Auto Trade uses its own worker state. Do not share
-	-- tradingRunning/tradeSelections with the manual Trading tab queue.
 	local autoTradeLoopRunning = false
 	local autoTradeLoopToken = 0
 	local autoTradeWaitingNoticeShown = false
-	local autoTradeToggle -- forward declaration so the worker can switch the UI toggle off
+	local autoTradeToggle
 
 	local function getKaliremTradeHouses()
-		-- Poll ClientData directly. Do not call refreshOwnedHouses() every second;
-		-- that refreshes several Rayfield dropdowns and can cause unnecessary lag.
+
 		local manager = {}
 		pcall(function()
 			manager = ClientData.get("house_manager") or {}
@@ -2645,8 +2605,6 @@ local function loadMain()
 			end
 		end
 
-		-- Make the order stable. Numbered Kalirem houses are handled in number order,
-		-- with the house id as the final tie-breaker.
 		table.sort(matches, function(a, b)
 			local aNum = tonumber(a.name:match("[Kk][Aa][Ll][Ii][Rr][Ee][Mm]%s*(%d+)"))
 			local bNum = tonumber(b.name:match("[Kk][Aa][Ll][Ii][Rr][Ee][Mm]%s*(%d+)"))
@@ -2670,8 +2628,7 @@ local function loadMain()
 	end
 
 	local function refreshKaliremTradeSelections()
-		-- Auto Paste Auto Trade only needs the live count here. Do not touch
-		-- tradeSelections because that table belongs to the manual Trading tab.
+
 		return #getKaliremTradeHouses()
 	end
 
@@ -2680,7 +2637,7 @@ local function loadMain()
 	end
 
 	processAutoList = function()
-		-- Only one Auto Paste Auto Trade worker may exist at a time.
+
 		if autoTradeLoopRunning then return end
 
 		autoTradeLoopToken += 1
@@ -2698,21 +2655,16 @@ local function loadMain()
 			end
 
 			while autoTradeStillEnabled() do
-				-- Never trade a target while Auto Paste is still editing houses.
-				-- Stay alive and begin/resume immediately after Auto Paste finishes.
+
 				if autoPasteRunning then
 					task.wait(0.5)
 					continue
 				end
 
-				-- IMPORTANT: rebuild from house_manager every pass. Never rely on the
-				-- old queue because Auto Paste/Auto Buy can create or rename houses
-				-- while this worker is already running.
 				local matches = getKaliremTradeHouses()
 
 				if #matches == 0 then
-					-- Once at least one Kalirem house was successfully traded and none
-					-- remain, automatically turn Auto Trade OFF instead of waiting forever.
+
 					if tradedAnyThisRun then
 						Rayfield:Notify({
 							Title = "Auto Trade",
@@ -2730,8 +2682,6 @@ local function loadMain()
 						break
 					end
 
-					-- If Auto Trade was enabled before any Kalirem house exists, keep
-					-- waiting so Auto Paste/Auto Buy can still create one later.
 					if not autoTradeWaitingNoticeShown then
 						autoTradeWaitingNoticeShown = true
 						Rayfield:Notify({
@@ -2749,8 +2699,6 @@ local function loadMain()
 				local entryId = entry.id
 				local entryName = entry.name
 
-				-- Verify the same house is still owned and still named Kalirem before
-				-- doing anything with it.
 				local currentHouse = getOwnedHouseById(entryId)
 				if not currentHouse or not isKaliremHouseName(currentHouse.name) then
 					task.wait(0.25)
@@ -2763,8 +2711,6 @@ local function loadMain()
 					Duration = 3,
 				})
 
-				-- Retry SpawnHouse until it succeeds, the house disappears/gets renamed,
-				-- or Auto Trade is switched off.
 				local spawned = false
 				while autoTradeStillEnabled() and not spawned do
 					currentHouse = getOwnedHouseById(entryId)
@@ -2789,7 +2735,6 @@ local function loadMain()
 					continue
 				end
 
-				-- Give the spawned house time to become the active house.
 				task.wait(4)
 
 				if not autoTradeStillEnabled() then break end
@@ -2804,10 +2749,6 @@ local function loadMain()
 					Duration = 4,
 				})
 
-				-- Keep the SAME Kalirem house listed until it leaves house_manager.
-				-- We intentionally do not depend on listed_for_trade because that field
-				-- is not reliable on every client version. Re-sending ListHouse every
-				-- few seconds also recovers from a silently rejected/late list request.
 				local lastListAttempt = 0
 				while autoTradeStillEnabled() do
 					currentHouse = getOwnedHouseById(entryId)
@@ -2818,13 +2759,11 @@ local function loadMain()
 							Content = entryName .. " traded ✔",
 							Duration = 3,
 						})
-						-- Update the visible owned-house dropdowns once per completed trade.
+
 						pcall(refreshOwnedHouses)
 						break
 					end
 
-					-- If something renamed this house away from Kalirem, stop handling
-					-- this one and immediately rescan the owned houses.
 					if not isKaliremHouseName(currentHouse.name) then
 						break
 					end
@@ -2839,20 +2778,15 @@ local function loadMain()
 					task.wait(0.5)
 				end
 
-				-- Immediately loop back and rescan. If another Kalirem house exists,
-				-- it becomes the next trade automatically.
 				task.wait(0.5)
 			end
 
-			-- Do not let an old worker overwrite the state of a newer worker.
 			if autoTradeLoopToken == myLoopToken then
 				autoTradeLoopRunning = false
 				autoTradeWaitingNoticeShown = false
 			end
 		end)
 	end
-
-
 
 	autoTradeToggle = AutoPasteTab:CreateToggle({
 		Name = "Auto Trade",
@@ -2877,12 +2811,9 @@ local function loadMain()
 					})
 				end
 
-				-- Start now even while Auto Paste is still running. The worker will
-				-- continuously detect Kalirem houses as they appear.
 				processAutoList()
 			else
-				-- Stop only the Auto Paste Auto Trade worker. Invalidate the current
-				-- token too, so a quick OFF -> ON cannot revive the old task.
+
 				autoTradeLoopToken += 1
 				autoTradeLoopRunning = false
 				autoTradeWaitingNoticeShown = false
@@ -2899,13 +2830,14 @@ local function loadMain()
 			table.clear(tradeSelections)
 			lastTradeCount = 0
 			pcall(function()
-				if tradeDropdown then tradeDropdown:Set({}) end
+				if tradeDropdown then
+					tradeDropdown:Refresh(ownedHouseList, true)
+				end
 			end)
 			Rayfield:Notify({ Title = "Trading", Content = "Queue cleared & stopped 🛑" })
 		end,
 	})
 
-	-- ==================== HELPER FUNCTIONS ====================
 	local function countfurnitures(t)
 		local c = 0
 		for _ in pairs(t or {}) do c += 1 end
@@ -2953,7 +2885,6 @@ local function loadMain()
 		return t
 	end
 
-	-- ==================== MAIN TAB ====================
 	Tab:CreateLabel(
 		"If you are using glitch houses, use the slow paste. And if you are using normal houses, use the fast paste. If you use it on higher builds expect lagging or crashing.",
 		"info"
@@ -2997,7 +2928,6 @@ local function loadMain()
 
 	Tab:CreateSection("Main Function")
 
-	-- Furniture/texture helpers
 	local function canbuyfurniture(kind)
 		local db_entry = furnituresdb[kind]
 		if not db_entry or not db_entry.cost or db_entry.off_sale then
@@ -3088,9 +3018,6 @@ local function loadMain()
 	local function applyRequestedOutfits(requests, safetyCheck)
 		if type(requests) ~= "table" then return true end
 
-		-- Outfit data is not applied by BuyFurnitures itself. We must wait for the
-		-- newly-created furniture to appear in house_interior, match each request to
-		-- its mannequin, then use the normal mannequin edit/save flow.
 		local outfitRequests = {}
 		for _, request in ipairs(requests) do
 			local properties = request.properties or {}
@@ -3118,8 +3045,6 @@ local function loadMain()
 			local matchedId = nil
 			local matchedDistance = math.huge
 
-			-- ClientData can lag behind BuyFurnitures for a moment. Retry the lookup
-			-- instead of doing a single scan and silently skipping the outfit.
 			local lookupStarted = tick()
 			repeat
 				if stopFlag or (safetyCheck and not safetyCheck()) then return false end
@@ -3143,8 +3068,6 @@ local function loadMain()
 						end
 					end
 
-					-- If CFrames are unavailable/different after server normalization, still
-					-- use an unused furniture instance of the exact same kind.
 					if not matchedId then matchedId = fallbackId end
 				end
 
@@ -3167,8 +3090,7 @@ local function loadMain()
 					if not editOk then
 						lastErr = "StartEditingMannequin: " .. tostring(editResult)
 					else
-						-- Give the edit state a moment to reach the server before saving it to
-						-- the furniture. Calling both remotes back-to-back was unreliable.
+
 						task.wait(0.2)
 						if stopFlag or (safetyCheck and not safetyCheck()) then return false end
 						local saveOk, saveResult = pcall(function()
@@ -3255,7 +3177,7 @@ local function loadMain()
 				allSuccessful = false
 				warn("Furniture batch invoke failed:", invokeErr)
 			else
-				-- Never re-send a partially successful batch: that can duplicate furniture.
+
 				local confirmed = false
 				local started = tick()
 				while tick() - started < math.max(4, delay_seconds + 3) do
@@ -3343,7 +3265,6 @@ local function loadMain()
 
 	Tab:CreateSection("Paste Functions")
 
-	-- ==================== PASTE FAST (assigned to upvalue) ====================
 	pastehousefast = function(houseData, safetyCheck)
 		local houseToPaste = houseData or savedhouse
 		if not houseToPaste or not houseToPaste.furniture then
@@ -3459,7 +3380,6 @@ local function loadMain()
 			applyRequestedOutfits(furniturest, safetyCheck)
 		end
 
-		-- Activate furniture
 		local success, interior = pcall(function() return cd.get("house_interior") end)
 		if success and interior and interior.furniture then
 			for i, v in pairs(interior.furniture) do
@@ -3472,7 +3392,6 @@ local function loadMain()
 			end
 		end
 
-		-- Apply textures
 		local texturesSuccessful = true
 		if houseToPaste.textures and Pastetextures.CurrentValue then
 			updatestatus("Pasting Textures")
@@ -3509,8 +3428,7 @@ local function loadMain()
 
 		if stopFlag or (safetyCheck and not safetyCheck()) then return false end
 		if not texturesSuccessful then
-			-- Unavailable/failed textures are non-fatal. Keep the furniture that was
-			-- successfully pasted and let Auto Paste remove this file from the queue.
+
 			Rayfield:Notify({ Title = "Warning", Content = "Paste completed. Unavailable/failed textures were skipped.", Duration = 5, Image = "circle-alert" })
 			updatestatus("Idle") updateprog("-") updateitem("-")
 			return true
@@ -3522,7 +3440,6 @@ local function loadMain()
 		return true
 	end
 
-	-- ==================== PASTE SLOW (assigned to upvalue) ====================
 	pastehouseslow = function(houseData, safetyCheck)
 		local houseToPaste = houseData or savedhouse
 		if not houseToPaste or not houseToPaste.furniture then
@@ -3622,7 +3539,6 @@ local function loadMain()
 			return false
 		end
 
-		-- Activate furniture
 		local success, interior = pcall(function() return cd.get("house_interior") end)
 		if success and interior and interior.furniture then
 			for i, v in pairs(interior.furniture) do
@@ -3635,7 +3551,6 @@ local function loadMain()
 			end
 		end
 
-		-- Apply textures
 		local texturesSuccessful = true
 		if houseToPaste.textures and Pastetextures.CurrentValue then
 			updatestatus("Pasting Textures")
@@ -3672,8 +3587,7 @@ local function loadMain()
 
 		if stopFlag or (safetyCheck and not safetyCheck()) then return false end
 		if not texturesSuccessful then
-			-- Unavailable/failed textures are non-fatal. Keep the furniture that was
-			-- successfully pasted and let Auto Paste remove this file from the queue.
+
 			Rayfield:Notify({ Title = "Warning", Content = "Paste completed. Unavailable/failed textures were skipped.", Duration = 5, Image = "circle-alert" })
 			updatestatus("Idle") updateprog("-") updateitem("-")
 			return true
@@ -3713,7 +3627,6 @@ local function loadMain()
 		return true
 	end
 
-	-- ==================== FIX MISSING ====================
 	local function fixMissing()
 		stopFlag = false
 		if not savedhouse then
@@ -3799,7 +3712,6 @@ local function loadMain()
 		updatestatus("Idle") updateprog("-") updateitem("-")
 	end
 
-	-- ==================== PASTE INIT ====================
 	local manualPasteRunning = false
 	local function pastehouseinit(mode)
 		if manualPasteRunning then
@@ -3923,7 +3835,6 @@ local function loadMain()
 			end
 		end
 
-		-- Keep the saved player selectable even when they are currently offline.
 		if selectedPlayer and selectedPlayer ~= "" and not seen[string.lower(selectedPlayer)] then
 			table.insert(t, selectedPlayer)
 		end
@@ -3982,8 +3893,6 @@ local function loadMain()
 			return false
 		end
 
-		-- When no player is selected, Auto Accept works for any player.
-		-- If a player is selected, keep the sequence locked to that player only.
 		if not selectedPlayer or selectedPlayer == "" then
 			return activeAcceptedTradePlayer ~= nil
 				and string.lower(activeAcceptedTradePlayer) == string.lower(tostring(playerName))
@@ -3994,12 +3903,7 @@ local function loadMain()
 	end
 
 	local function runTradeAcceptSequence(playerName, acceptedAt)
-		-- Robust three-phase accept flow:
-		-- 1) accept the incoming request repeatedly for a short window,
-		-- 2) retry the negotiation Accept until that stage has had time to register,
-		-- 3) stop touching AcceptNegotiation and retry only the final Confirm.
-		-- The sequence is scoped to the selected player and is cancelled immediately
-		-- when the toggle/player changes or a newer request starts.
+
 		task.spawn(function()
 			local player = resolvePlayer(playerName)
 			if not player then
@@ -4007,7 +3911,6 @@ local function loadMain()
 				return
 			end
 
-			-- PHASE 1: catch the pending request even when TradeRequestReceived was late.
 			for _ = 1, 8 do
 				if not isSelectedTradeStillActive(player.Name, acceptedAt) then return end
 				pcall(function()
@@ -4020,8 +3923,6 @@ local function loadMain()
 				task.wait(0.5)
 			end
 
-			-- PHASE 2: Roblox may ignore the first AcceptNegotiation if the request
-			-- has not fully transitioned into negotiation yet, so retry briefly.
 			for _ = 1, 8 do
 				if not isSelectedTradeStillActive(player.Name, acceptedAt) then return end
 				pcall(function()
@@ -4033,8 +3934,6 @@ local function loadMain()
 				task.wait(0.75)
 			end
 
-			-- PHASE 3: once we reach confirmation, never send AcceptNegotiation again.
-			-- Keep retrying ConfirmTrade long enough to cover the countdown/server lag.
 			for _ = 1, 32 do
 				if not isSelectedTradeStillActive(player.Name, acceptedAt) then return end
 				pcall(function()
@@ -4068,8 +3967,7 @@ local function loadMain()
 						break
 					end
 				else
-					-- No saved/selected player: accept whoever sent the request,
-					-- including players who joined after the script started.
+
 					player = candidate
 					break
 				end
@@ -4083,9 +3981,6 @@ local function loadMain()
 		runTradeAcceptSequence(player.Name, activeAcceptedTradeAt)
 	end)
 
-	-- Fallback watcher: some client versions can miss TradeRequestReceived if the
-	-- request was already visible when the toggle/config was restored. Periodically
-	-- try the selected player's request and start the same guarded sequence.
 	task.spawn(function()
 		while true do
 			task.wait(1)
@@ -4140,12 +4035,10 @@ local function loadMain()
 	end)
 	Players.PlayerRemoving:Connect(function() task.wait(0.3) refreshPlayers() end)
 
-	-- ==================== PASTEBIN TAB ====================
 	local PastebinTab = Window:CreateTab("Pastebin", "clipboard")
 	local userPastebinDevKey = ""
 	local userPastebinUsername = ""
 	local userPastebinPassword = ""
-
 
 	PastebinTab:CreateLabel(
 		"TO GET DEV API KEY YOU NEED TO MAKE ACCOUNT ON PASTEBIN AFTER THAT GO TO https://pastebin.com/doc_api AND COPY YOUR DEV API KEY",
@@ -4256,7 +4149,6 @@ local function loadMain()
 		end,
 	})
 
-	-- ==================== CREATE FILE TAB ====================
 	local CreateFileTab = Window:CreateTab("Create File", "folder")
 
 	if not isfolder(houseFilesPath) then makefolder(houseFilesPath) end
@@ -4341,8 +4233,8 @@ local function loadMain()
 		elseif #filtered > 0 then
 			pcall(function() fileDropdown:Set(filtered[1]) end)
 		else
-			-- Rayfield cannot safely Set(nil) on an empty dropdown.
-			pcall(function() fileDropdown:Set({}) end)
+
+			pcall(function() fileDropdown:Refresh(filtered, true) end)
 		end
 		refreshFQFileList()
 	end
@@ -4401,7 +4293,6 @@ local function loadMain()
 			Rayfield:Notify({ Title = "Success", Content = "House saved: " .. filename .. ".json", Duration = 3, Image = "circle-check" })
 		end,
 	})
-
 
 	CreateFileTab:CreateButton({
 		Name = "Load House from File",
@@ -4477,7 +4368,6 @@ local function loadMain()
 		end,
 	})
 
-	-- ==================== CONVERTER TAB ====================
 	do
 		local ConverterTab = Window:CreateTab("Converter", "repeat")
 		local convertPath = houseFSPath .. "/Convert"
@@ -4506,15 +4396,15 @@ local function loadMain()
 				end
 				table.sort(options, naturalSort)
 				if not table.find(options, selectedFile) then selectedFile = options[1] end
-				sourceDropdown:Refresh(options)
-				sourceDropdown:Set(selectedFile and {selectedFile} or {})
+				sourceDropdown:Refresh(options, true)
+				if selectedFile then
+					sourceDropdown:Set({selectedFile})
+				end
 				status:Set("Source files: " .. #options .. " | Folder: HouseFS/Convert")
 			end)
 			if not ok then status:Set("Cannot read Convert folder: " .. tostring(err)) end
 		end
 
-		-- Validate before normalizing so a wrong selector or malformed file cannot
-		-- silently turn into an empty/partial saved house. No source code is executed.
 		local function convertSource(data, cloner)
 			local function requireValue(condition, message)
 				if not condition then error(message, 0) end
@@ -4534,7 +4424,7 @@ local function loadMain()
 			requireValue(type(data) == "table", "JSON must contain a house object.")
 			local items = cloner == "Rage" and data.furniture or data.furnitures
 			local houseType = cloner == "Rage" and data.building_type or data.buildingType
-			-- Explicit branches avoid Lua's and/or fallback when a field is missing.
+
 			if cloner == "Rage" then items = data.furniture; houseType = data.building_type end
 			requireValue(type(items) == "table", "This file does not match " .. cloner .. ". Check the Source Cloner selection.")
 			requireValue(type(houseType) == "string" and houseType:match("%S"), "Missing house type.")
@@ -4557,7 +4447,7 @@ local function loadMain()
 					requireValue(converted.colors[index] == nil, "Duplicate color index for " .. item.id)
 					converted.colors[index] = color
 				end
-				-- Keep text, outfits, and all other furniture properties intact.
+
 				result.furniture[tostring(key)] = converted
 				count = count + 1
 				local db = furnituresdb[item.id]
@@ -4589,7 +4479,7 @@ local function loadMain()
 			result.furniture_quantity = count
 			result.total_cost = cost
 			result.saved_by = "Cubix-HouseCloner"
-			-- Use the same typed serialization as Save House to File.
+
 			return serializeAutoPasteValue(deserializeFileValue(result)), count
 		end
 
@@ -4648,8 +4538,6 @@ local function loadMain()
 		refreshSources()
 	end
 
-
-	-- ==================== TELEPORT TAB ====================
 	local Teleport = Window:CreateTab("Teleport", "map-pin")
 	Teleport:CreateSection("House Teleports")
 
@@ -4696,23 +4584,14 @@ local function loadMain()
 		end,
 	})
 
-	-- ==================== AUTO REFRESH ====================
 	refreshOwnedHouses()
 
-	-- Use the ClientData callback when available, but do not rely on it alone.
-	-- Some client versions expose register_callback_plus_existing() successfully
-	-- yet do not consistently fire it for later house_manager mutations.
 	pcall(function()
 		ClientData.register_callback_plus_existing("house_manager", function()
 			refreshOwnedHouses()
 		end)
 	end)
 
-	-- Reliable Target Houses watcher. This runs regardless of whether the callback
-	-- API exists. It builds a stable signature from the owned house IDs + names
-	-- and refreshes the dropdown only when that signature actually changes.
-	-- Locals stay inside this spawned function so they do not add register pressure
-	-- to the already-large loadMain() function.
 	task.spawn(function()
 		local lastSignature = nil
 
@@ -4748,24 +4627,6 @@ local function loadMain()
 		end
 	end)
 
-	-- Rayfield shows a "configuration loaded" toast by default. Load the
-	-- configuration normally, but hide only that library status notification.
-	local originalRayfieldNotify = Rayfield.Notify
-	Rayfield.Notify = function(self, notification)
-		if notification and notification.Title == "Rayfield Configurations" then
-			return
-		end
-		return originalRayfieldNotify(self, notification)
-	end
-	do
-		local rayfieldConfigOk, rayfieldConfigErr = pcall(function()
-			Rayfield:LoadConfiguration()
-		end)
-		Rayfield.Notify = originalRayfieldNotify
-		if not rayfieldConfigOk then
-			warn("[Cubix] Rayfield configuration load failed: " .. tostring(rayfieldConfigErr))
-		end
-	end
 	refreshOwnedHouses()
 	local loadCallOk, loadedOk, loadInfo = pcall(loadAutoPasteConfig)
 	if not loadCallOk then
