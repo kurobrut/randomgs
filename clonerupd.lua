@@ -402,6 +402,10 @@ local function loadMain()
 	local autoPasteMode = "fast"
 	local autoPasteSource = "loaded"
 	local autoPasteKaliremEnabled = false
+	local autoPasteKaliremToggle
+	local autoPasteKaliremStateChanging = false
+	local autoSelectedKaliremIds = {}
+	local completedKaliremIds = {}
 	local autoPasteSingleFile = false
 	local fileQueue = {}
 	local fqAllFiles = {}
@@ -1267,32 +1271,7 @@ local function loadMain()
 
 	AutoPasteTab:CreateSection("Target Houses")
 
-	local function selectAvailableKaliremTargets()
-		refreshOwnedHouses()
-
-		local added = 0
-		local manager = {}
-		pcall(function()
-			manager = ClientData.get("house_manager") or {}
-		end)
-
-		for _, house in pairs(manager) do
-			if type(house) == "table" and house.house_id ~= nil then
-				local houseName = tostring(house.name or "")
-				if string.lower(houseName):match("^%s*kalirem") then
-					local label = ownedHouseLabelById[house.house_id]
-						or (houseName ~= "" and houseName)
-						or ("Kalirem [" .. tostring(house.house_id) .. "]")
-
-					if not autoPasteSelections[house.house_id] then
-						added += 1
-					end
-					autoPasteSelections[house.house_id] = label
-				end
-			end
-		end
-
-		-- Make the automatic targets visibly selected in the Rayfield dropdown too.
+	local function refreshAutoPasteDropdownSelection()
 		if autoPasteDropdown then
 			autoPasteApplyingSavedTargets = true
 			pcall(function()
@@ -1301,34 +1280,108 @@ local function loadMain()
 			end)
 			autoPasteApplyingSavedTargets = false
 		end
-
-		autoSaveAutoPasteConfig()
-		return added
 	end
 
-	AutoPasteTab:CreateToggle({
+	local function selectAvailableKaliremTargets()
+		refreshOwnedHouses()
+
+		local added = 0
+		local available = 0
+		local manager = {}
+		pcall(function()
+			manager = ClientData.get("house_manager") or {}
+		end)
+
+		local liveIds = {}
+		for _, house in pairs(manager) do
+			if type(house) == "table" and house.house_id ~= nil then
+				local houseId = house.house_id
+				local key = tostring(houseId)
+				liveIds[key] = true
+				local houseName = tostring(house.name or "")
+				if string.lower(houseName):match("^%s*kalirem") and not completedKaliremIds[key] then
+					available += 1
+					local label = ownedHouseLabelById[houseId]
+						or (houseName ~= "" and houseName)
+						or ("Kalirem [" .. key .. "]")
+
+					if not autoPasteSelections[houseId] then
+						added += 1
+						autoSelectedKaliremIds[key] = true
+					end
+					autoPasteSelections[houseId] = label
+				end
+			end
+		end
+
+		-- Once a completed house actually disappears, forget the completed ID.
+		for key in pairs(completedKaliremIds) do
+			if not liveIds[key] then
+				completedKaliremIds[key] = nil
+			end
+		end
+
+		refreshAutoPasteDropdownSelection()
+		autoSaveAutoPasteConfig()
+		return added, available
+	end
+
+	local function removeAutomaticKaliremTargets()
+		for key in pairs(autoSelectedKaliremIds) do
+			for houseId in pairs(autoPasteSelections) do
+				if tostring(houseId) == key then
+					autoPasteSelections[houseId] = nil
+					break
+				end
+			end
+			autoSelectedKaliremIds[key] = nil
+		end
+		refreshAutoPasteDropdownSelection()
+		autoSaveAutoPasteConfig()
+	end
+
+	local function setKaliremToggleState(value, silent)
+		value = value == true
+		if autoPasteKaliremEnabled == value and not autoPasteKaliremStateChanging then
+			if value then selectAvailableKaliremTargets() end
+			return
+		end
+
+		autoPasteKaliremEnabled = value
+		if autoPasteKaliremToggle and not autoPasteKaliremStateChanging then
+			autoPasteKaliremStateChanging = true
+			pcall(function() autoPasteKaliremToggle:Set(value) end)
+			autoPasteKaliremStateChanging = false
+		end
+
+		local added = 0
+		if value then
+			added = selectAvailableKaliremTargets()
+		else
+			removeAutomaticKaliremTargets()
+		end
+
+		if not silent and autoPasteConfigReady then
+			Rayfield:Notify({
+				Title = "Auto Paste",
+				Content = value
+					and ("Auto-enabled: selected " .. tostring(added) .. " new Kalirem house(s).")
+					or "Auto-disabled: no available Kalirem houses.",
+				Duration = 3,
+			})
+		end
+	end
+
+	autoPasteKaliremToggle = AutoPasteTab:CreateToggle({
 		Name = "Auto Paste Kalirem Houses",
 		CurrentValue = false,
 		Flag = "AutoPasteKaliremHouses",
 		Callback = function(value)
-			autoPasteKaliremEnabled = value == true
-
-			local added = 0
-			if autoPasteKaliremEnabled then
-				added = selectAvailableKaliremTargets()
-			else
-				autoSaveAutoPasteConfig()
+			if autoPasteKaliremStateChanging then
+				autoPasteKaliremEnabled = value == true
+				return
 			end
-
-			if autoPasteConfigReady then
-				Rayfield:Notify({
-					Title = "Auto Paste",
-					Content = autoPasteKaliremEnabled
-						and ("Selected " .. tostring(added) .. " new Kalirem house(s) in the target dropdown.")
-						or "Automatic Kalirem targeting disabled.",
-					Duration = 3,
-				})
-			end
+			setKaliremToggleState(value, false)
 		end,
 	})
 
@@ -1360,6 +1413,41 @@ local function loadMain()
 			end
 		end,
 	})
+
+	-- Automatically enable when an unprocessed Kalirem house is available,
+	-- and disable when none are available. The dropdown is kept in sync too.
+	task.spawn(function()
+		while task.wait(1.5) do
+			local manager = {}
+			pcall(function() manager = ClientData.get("house_manager") or {} end)
+
+			local available = 0
+			local liveIds = {}
+			for _, house in pairs(manager) do
+				if type(house) == "table" and house.house_id ~= nil then
+					local key = tostring(house.house_id)
+					liveIds[key] = true
+					if string.lower(tostring(house.name or "")):match("^%s*kalirem") and not completedKaliremIds[key] then
+						available += 1
+					end
+				end
+			end
+
+			for key in pairs(completedKaliremIds) do
+				if not liveIds[key] then completedKaliremIds[key] = nil end
+			end
+
+			if available > 0 then
+				if not autoPasteKaliremEnabled then
+					setKaliremToggleState(true, true)
+				else
+					selectAvailableKaliremTargets()
+				end
+			elseif autoPasteKaliremEnabled then
+				setKaliremToggleState(false, true)
+			end
+		end
+	end)
 
 	AutoPasteTab:CreateButton({
 		Name = "Refresh House List",
@@ -1717,6 +1805,13 @@ local function loadMain()
 		exitCurrentHouse()
 		task.wait(2)
 		if not checkTargetName() then return false end
+
+		-- A successfully pasted Kalirem target must not be immediately re-added
+		-- by the automatic watcher while it is still present in house_manager.
+		if string.lower(tostring(houseName or "")):match("^%s*kalirem") then
+			completedKaliremIds[tostring(houseId)] = true
+			autoSelectedKaliremIds[tostring(houseId)] = nil
+		end
 		deselectAutoPasteTarget(houseId)
 		return true
 	end
@@ -1750,7 +1845,7 @@ local function loadMain()
 			for _, house in pairs(manager) do
 				if type(house) == "table" and house.house_id ~= nil and isAutoPasteKaliremName(house.name) then
 					local key = tostring(house.house_id)
-					if not seen[key] then
+					if not completedKaliremIds[key] and not seen[key] then
 						seen[key] = true
 						autoPasteSelections[house.house_id] = tostring(house.name or ("Kalirem [" .. key .. "]"))
 						table.insert(ids, house.house_id)
