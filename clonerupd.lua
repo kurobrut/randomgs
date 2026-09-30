@@ -51,6 +51,7 @@ local function loadMain()
 		error("Failed to initialize Rayfield: " .. tostring(Rayfield))
 	end
 
+	-- V2 uses unique control flags + a separate config file to avoid stale Rayfield dropdown keys.
 	local Window = Rayfield:CreateWindow({
 		Name = "Cubix . House Cloner ",
 		LoadingTitle = "Cubix",
@@ -58,7 +59,7 @@ local function loadMain()
 		Theme = "Amethyst",
 		ConfigurationSaving = {
 			Enabled = true,
-			FileName = "CubixAutoPaste",
+			FileName = "CubixAutoPasteV2",
 		},
 		Discord = {
 			Enabled = true,
@@ -1128,6 +1129,7 @@ local function loadMain()
 		Options = {},
 		CurrentOption = {},
 		MultipleOptions = true,
+		Flag = "AutoPasteQueueFiles",
 		Callback = function(_) end,
 	})
 
@@ -2109,6 +2111,7 @@ local function loadMain()
 		Name = "Select House To Buy",
 		Options = houseList,
 		MultipleOptions = true,
+		Flag = "BuyerHouseKinds",
 		Callback = function(opt)
 			table.clear(selectedHouseKinds)
 			if typeof(opt) == "table" then
@@ -2423,6 +2426,7 @@ local function loadMain()
 		Options = ownedHouseList,
 		CurrentOption = {},
 		MultipleOptions = false,
+		Flag = "BuyerOwnedHouse",
 		Callback = function(opt)
 			local name = (typeof(opt) == "table") and opt[1] or opt
 			selectedHouseId = ownedHouseMap[name] or nil
@@ -2495,6 +2499,7 @@ local function loadMain()
 		Options = ownedHouseList,
 		CurrentOption = {},
 		MultipleOptions = true,
+		Flag = "TradeHouseTargets",
 		Callback = function(opts)
 			table.clear(tradeSelections)
 			for _, name in ipairs(opts or {}) do
@@ -3932,6 +3937,7 @@ local function loadMain()
 		Options = getPlayers(),
 		CurrentOption = "None",
 		MultipleOptions = false,
+		Flag = "AutoAcceptPlayer",
 		Callback = function(option)
 			if autoPasteApplyingSavedTargets then return end
 			local value = (typeof(option) == "table") and option[1] or option
@@ -4589,6 +4595,7 @@ local function loadMain()
 
 		ConverterTab:CreateDropdown({
 			Name = "Source Cloner", Options = {"Rage", "TBI"}, CurrentOption = {"Rage"}, MultipleOptions = false,
+			Flag = "ConverterSourceCloner",
 			Callback = function(value)
 				local choice = type(value) == "table" and value[1] or value
 				if choice == "Rage" or choice == "TBI" then sourceCloner = choice end
@@ -4596,6 +4603,7 @@ local function loadMain()
 		})
 		sourceDropdown = ConverterTab:CreateDropdown({
 			Name = "File to Convert", Options = {}, CurrentOption = {}, MultipleOptions = false,
+			Flag = "ConverterFile",
 			Callback = function(value) selectedFile = type(value) == "table" and value[1] or value end,
 		})
 		ConverterTab:CreateInput({
@@ -4665,7 +4673,7 @@ local function loadMain()
 		Options = getplayernames(),
 		CurrentOption = { getplayernames()[1] },
 		MultipleOptions = false,
-		Flag = "Dropdown1",
+		Flag = "TeleportPlayer",
 		Callback = function(_) end,
 	})
 
