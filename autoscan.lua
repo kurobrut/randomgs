@@ -243,6 +243,68 @@ local function loadMain()
 		return value
 	end
 
+
+	-- Shared cost/cleanup helpers so local save, Pastebin, and Auto Scan all use the same format.
+	local function getHouseCostInfo(house)
+		local furnitureCost, textureCost, unknown = 0, 0, 0
+		for _, item in pairs((house and house.furniture) or {}) do
+			local db = furnituresdb[item.id]
+			if db and type(db.cost) == "number" then furnitureCost += db.cost else unknown += 1 end
+		end
+		for _, room in pairs((house and house.textures) or {}) do
+			local wallId = room.walls
+			if wallId then
+				local db = texturesdb.walls and texturesdb.walls[wallId]
+				if db and type(db.cost) == "number" then textureCost += db.cost else unknown += 1 end
+			end
+			local floorId = room.floors
+			if floorId then
+				local db = texturesdb.floors and texturesdb.floors[floorId]
+				if db and type(db.cost) == "number" then textureCost += db.cost else unknown += 1 end
+			end
+		end
+		return furnitureCost, textureCost, unknown
+	end
+
+	local function prepareHouseForSave(house)
+		local clean = deepCopy(house or {})
+		for _, item in pairs(clean.furniture or {}) do
+			item.creator = nil
+			item.hash = nil
+			item.was_free = nil
+			item.no_value = nil
+			item.was_default = nil
+			item.item_category = nil
+			item.item_kind = nil
+			item.door_position = nil
+			item.last_position = nil
+			item.on = nil
+		end
+		local fc, tc, unknown = getHouseCostInfo(clean)
+		clean.total_cost = fc + tc
+		clean.furniture_quantity = countfurnitures(clean.furniture)
+		clean.saved_by = "Cubix-HouseCloner"
+		clean.properties = nil
+		clean.house_id = nil
+		clean.listed_for_trade = nil
+		clean.unique = nil
+		clean.active_addons = nil
+		clean.allows_coop_building = nil
+		clean.house_pos = nil
+		clean.textures_hash = nil
+		clean.player = nil
+		return clean, fc, tc, unknown
+	end
+
+	local function encodeHouseForSave(house)
+		local clean, fc, tc, unknown = prepareHouseForSave(house)
+		local ok, encoded = pcall(function()
+			return HttpService:JSONEncode(serializeAutoPasteValue(clean))
+		end)
+		if not ok then return nil, tostring(encoded), clean, fc, tc, unknown end
+		return encoded, nil, clean, fc, tc, unknown
+	end
+
 	Tab:CreateButton({
 		Name = "Scan house",
 		Callback = function()
@@ -314,29 +376,9 @@ local function loadMain()
 			if not filename then
 				return Rayfield:Notify({ Title = "Error", Content = "Please enter a valid filename", Duration = 3, Image = "circle-alert" })
 			end
-			local clean_house = deepCopy(savedhouse)
-			local furniturecost = 0
-			for _, v in pairs(clean_house.furniture or {}) do
-				if furnituresdb[v.id] then furniturecost += furnituresdb[v.id].cost or 0 end
-				v.hash = nil v.was_free = nil v.no_value = nil v.was_default = nil
-				v.item_category = nil v.item_kind = nil v.occupied = v.occupied or nil
-				v.door_position = nil v.last_position = nil v.on = nil
-			end
-			local texturecost = 0
-			for _, v in pairs(clean_house.textures or {}) do
-				if texturesdb.walls[v.walls] then texturecost += texturesdb.walls[v.walls].cost or 0 end
-				if texturesdb.floors[v.floors] then texturecost += texturesdb.floors[v.floors].cost or 0 end
-			end
-			clean_house.total_cost = furniturecost + texturecost
-			clean_house.furniture_quantity = countfurnitures(clean_house.furniture)
-			clean_house.saved_by = "Cubix-HouseCloner"
-			clean_house.properties = nil clean_house.house_id = nil clean_house.listed_for_trade = nil
-			clean_house.unique = nil clean_house.active_addons = nil clean_house.allows_coop_building = nil
-			clean_house.house_pos = nil clean_house.textures_hash = nil clean_house.player = nil
-			local serializableHouse = serializeAutoPasteValue(clean_house)
-			local success, encoded = pcall(function() return HttpService:JSONEncode(serializableHouse) end)
-			if not success then
-				return Rayfield:Notify({ Title = "Error", Content = "Failed to encode house data", Duration = 3, Image = "circle-alert" })
+			local encoded, encodeErr = encodeHouseForSave(savedhouse)
+			if not encoded then
+				return Rayfield:Notify({ Title = "Error", Content = "Failed to encode house data: " .. tostring(encodeErr):sub(1, 100), Duration = 4, Image = "circle-alert" })
 			end
 			local wrote, writeErr = pcall(function()
 				if type(isfolder) ~= "function" or type(makefolder) ~= "function" or type(writefile) ~= "function" then
@@ -347,7 +389,7 @@ local function loadMain()
 				writefile(houseFilesPath .. "/" .. filename .. ".json", encoded)
 			end)
 			if not wrote then
-				return Rayfield:Notify({ Title = "Error", Content = "Failed to save file: " .. tostring(writeErr), Duration = 4, Image = "circle-alert" })
+				return Rayfield:Notify({ Title = "Error", Content = "Failed to save file: " .. tostring(writeErr):sub(1, 120), Duration = 4, Image = "circle-alert" })
 			end
 			Rayfield:Notify({ Title = "Success", Content = "House saved: " .. filename .. ".json", Duration = 3, Image = "circle-check" })
 		end,
@@ -451,28 +493,10 @@ local function loadMain()
 			if #userPastebinDevKey < 20 or not userPastebinDevKey:match("^[%w]+$") then
 				return Rayfield:Notify({ Title = "Invalid API Key", Content = "Paste ONLY the Pastebin Dev API key.\nDo not paste a URL.", Duration = 5 })
 			end
-			local clean_house = deepCopy(savedhouse)
-			local furniturecost = 0
-			for _, v in pairs(clean_house.furniture or {}) do
-				if furnituresdb[v.id] then furniturecost += furnituresdb[v.id].cost or 0 end
-				v.hash = nil v.was_free = nil v.no_value = nil v.was_default = nil
-				v.item_category = nil v.item_kind = nil v.occupied = v.occupied or nil
-				v.door_position = nil v.last_position = nil v.on = nil
+			local encoded, encodeErr = encodeHouseForSave(savedhouse)
+			if not encoded then
+				return Rayfield:Notify({ Title = "Error", Content = "Failed to encode house data: " .. tostring(encodeErr):sub(1, 100), Duration = 4 })
 			end
-			local texturecost = 0
-			for _, v in pairs(clean_house.textures or {}) do
-				if texturesdb.walls[v.walls] then texturecost += texturesdb.walls[v.walls].cost or 0 end
-				if texturesdb.floors[v.floors] then texturecost += texturesdb.floors[v.floors].cost or 0 end
-			end
-			clean_house.total_cost = furniturecost + texturecost
-			clean_house.furniture_quantity = countfurnitures(clean_house.furniture)
-			clean_house.saved_by = "Cubix-HouseCloner"
-			clean_house.properties = nil clean_house.house_id = nil clean_house.listed_for_trade = nil
-			clean_house.unique = nil clean_house.active_addons = nil clean_house.allows_coop_building = nil
-			clean_house.house_pos = nil clean_house.textures_hash = nil clean_house.player = nil
-			local serializableHouse = serializeAutoPasteValue(clean_house)
-			local ok, encoded = pcall(function() return HttpService:JSONEncode(serializableHouse) end)
-			if not ok then return Rayfield:Notify({ Title = "Error", Content = "Failed to encode house data", Duration = 3 }) end
 			local apiUserKey, loginErr = getUserKey(userPastebinDevKey, userPastebinUsername, userPastebinPassword)
 			if not apiUserKey and loginErr ~= "NO_LOGIN" then
 				return Rayfield:Notify({ Title = "Pastebin Login", Content = tostring(loginErr), Duration = 5 })
@@ -698,30 +722,65 @@ local function loadMain()
 	end
 
 
-	-- Auto Scan uses the same InteriorsM entry point as your original teleport tab.
+	-- Auto Scan: optimized stability checks, retries, anti-duplicate cache, full settings, and live statistics.
 	local AutoScan = Window:CreateTab("Auto Scan", "map-pin")
 	local autoScanFilesPath = "HouseFS/autoscan"
+	local autoScanSettingsPath = "HouseFS/settings/autoscan.json"
+	local duplicateCachePath = "HouseFS/settings/autoscan_duplicates.json"
+	local favoritesPath = "HouseFS/favorites"
+
 	local autoRunning, autoStop = false, false
 	local autoMode, autoPlayer = "Everyone in server", plr.Name
-	local selectedHouseTypes, minCostText, maxCostText, minFurnitureText = {}, "", "", ""
-	local includeDetails, skipEmpty = true, true
-	local settleSeconds = 5
-	local autoScanSettingsPath = "HouseFS/settings/autoscan.json"
+	local selectedHouseTypes = {}
+	local minCostText, maxCostText, minFurnitureText, minTexturesText = "", "", "", ""
+	local includeDetails, skipEmpty, antiDuplicate = true, true, true
+	local settleSeconds, retryCount = 4, 1
+	local unknownCostPolicy = "Save anyway"
 	local autoScanSettingsReady = false
+	local duplicateCache = {}
+
+	local function trim(value)
+		return tostring(value or ""):match("^%s*(.-)%s*$")
+	end
+
+	local function selectedTypesArray()
+		local arr = {}
+		for id in pairs(selectedHouseTypes) do table.insert(arr, id) end
+		table.sort(arr)
+		return arr
+	end
+
+	local function ensureAutoFolders()
+		if type(isfolder) ~= "function" or type(makefolder) ~= "function" then return false, "Folder functions unavailable" end
+		local ok, err = pcall(function()
+			if not isfolder("HouseFS") then makefolder("HouseFS") end
+			if not isfolder("HouseFS/settings") then makefolder("HouseFS/settings") end
+			if not isfolder(autoScanFilesPath) then makefolder(autoScanFilesPath) end
+		end)
+		return ok, err
+	end
 
 	local function saveAutoScanSettings()
 		if not autoScanSettingsReady then return false end
+		if type(writefile) ~= "function" then return false end
+		local folderOk = ensureAutoFolders()
+		if not folderOk then return false end
 		local ok = pcall(function()
-			if type(isfolder) ~= "function" or type(makefolder) ~= "function" or type(writefile) ~= "function" then
-				error("File saving unavailable")
-			end
-			if not isfolder("HouseFS") then makefolder("HouseFS") end
-			if not isfolder("HouseFS/settings") then makefolder("HouseFS/settings") end
 			writefile(autoScanSettingsPath, HttpService:JSONEncode({
-				version = 1,
+				version = 2,
+				mode = autoMode,
+				player = autoPlayer,
+				house_types = selectedTypesArray(),
 				min_cost = minCostText,
 				max_cost = maxCostText,
 				min_furniture = minFurnitureText,
+				min_textures = minTexturesText,
+				include_details = includeDetails,
+				skip_empty = skipEmpty,
+				anti_duplicate = antiDuplicate,
+				settle_seconds = settleSeconds,
+				retry_count = retryCount,
+				unknown_cost_policy = unknownCostPolicy,
 			}))
 		end)
 		return ok
@@ -729,70 +788,119 @@ local function loadMain()
 
 	local function loadAutoScanSettings()
 		if type(isfile) ~= "function" or type(readfile) ~= "function" then return end
-		local existsOk, exists = pcall(isfile, autoScanSettingsPath)
-		if not existsOk or not exists then return end
-		local ok, config = pcall(function()
-			return HttpService:JSONDecode(readfile(autoScanSettingsPath))
-		end)
-		if not ok or type(config) ~= "table" or config.version ~= 1 then return end
-		if type(config.min_cost) == "string" then minCostText = config.min_cost end
-		if type(config.max_cost) == "string" then maxCostText = config.max_cost end
-		if type(config.min_furniture) == "string" then minFurnitureText = config.min_furniture end
+		local okExists, exists = pcall(isfile, autoScanSettingsPath)
+		if not okExists or not exists then return end
+		local ok, cfg = pcall(function() return HttpService:JSONDecode(readfile(autoScanSettingsPath)) end)
+		if not ok or type(cfg) ~= "table" then return end
+		if type(cfg.mode) == "string" then autoMode = cfg.mode end
+		if type(cfg.player) == "string" then autoPlayer = cfg.player end
+		if type(cfg.min_cost) == "string" then minCostText = cfg.min_cost end
+		if type(cfg.max_cost) == "string" then maxCostText = cfg.max_cost end
+		if type(cfg.min_furniture) == "string" then minFurnitureText = cfg.min_furniture end
+		if type(cfg.min_textures) == "string" then minTexturesText = cfg.min_textures end
+		if type(cfg.include_details) == "boolean" then includeDetails = cfg.include_details end
+		if type(cfg.skip_empty) == "boolean" then skipEmpty = cfg.skip_empty end
+		if type(cfg.anti_duplicate) == "boolean" then antiDuplicate = cfg.anti_duplicate end
+		if type(cfg.settle_seconds) == "number" then settleSeconds = math.clamp(cfg.settle_seconds, 2, 15) end
+		if type(cfg.retry_count) == "number" then retryCount = math.clamp(math.floor(cfg.retry_count), 0, 3) end
+		if cfg.unknown_cost_policy == "Save anyway" or cfg.unknown_cost_policy == "Skip when filtering by cost" then
+			unknownCostPolicy = cfg.unknown_cost_policy
+		end
+		if type(cfg.house_types) == "table" then
+			for _, id in ipairs(cfg.house_types) do if type(id) == "string" then selectedHouseTypes[id] = true end end
+		end
+	end
+
+	local function loadDuplicateCache()
+		duplicateCache = {}
+		if type(isfile) ~= "function" or type(readfile) ~= "function" then return end
+		local okExists, exists = pcall(isfile, duplicateCachePath)
+		if not okExists or not exists then return end
+		local ok, data = pcall(function() return HttpService:JSONDecode(readfile(duplicateCachePath)) end)
+		if ok and type(data) == "table" then duplicateCache = data end
+	end
+
+	local function saveDuplicateCache()
+		if type(writefile) ~= "function" then return false end
+		if not ensureAutoFolders() then return false end
+		return pcall(function() writefile(duplicateCachePath, HttpService:JSONEncode(duplicateCache)) end)
 	end
 
 	loadAutoScanSettings()
+	loadDuplicateCache()
+
 	local houseDB = {}
 	pcall(function() houseDB = require(ReplicatedStorage.ClientDB.Housing.HouseDB) end)
-	local function trim(value) return tostring(value or ""):match("^%s*(.-)%s*$") end
-
-	-- Build a friendly multi-select list from HouseDB while preserving the real building_type id.
-	local houseTypeOptions, houseTypeOptionToId = {}, {}
+	local houseTypeOptions, houseTypeOptionToId, houseTypeIdToOption = {}, {}, {}
 	for id, entry in pairs(houseDB) do
 		if type(id) == "string" then
 			local displayName = type(entry) == "table" and tostring(entry.name or id) or id
 			local option = displayName .. " [" .. id .. "]"
 			table.insert(houseTypeOptions, option)
 			houseTypeOptionToId[option] = id
+			houseTypeIdToOption[id] = option
 		end
 	end
 	table.sort(houseTypeOptions, function(a, b) return a:lower() < b:lower() end)
 
+	local function currentHouseTypeOptions()
+		local out = {}
+		for id in pairs(selectedHouseTypes) do
+			local option = houseTypeIdToOption[id]
+			if option then table.insert(out, option) end
+		end
+		table.sort(out)
+		return out
+	end
+
 	local function setSelectedHouseTypes(value)
 		selectedHouseTypes = {}
-		if type(value) ~= "table" then return end
-		for _, option in ipairs(value) do
-			local id = houseTypeOptionToId[option] or option
-			if type(id) == "string" and id ~= "" then selectedHouseTypes[id] = true end
+		if type(value) == "table" then
+			for _, option in ipairs(value) do
+				local id = houseTypeOptionToId[option] or option
+				if type(id) == "string" and id ~= "" then selectedHouseTypes[id] = true end
+			end
 		end
+		saveAutoScanSettings()
 	end
+
 	local function playerNames()
 		local names = {}
 		for _, player in ipairs(Players:GetPlayers()) do table.insert(names, player.Name) end
 		table.sort(names)
 		return names
 	end
-	AutoScan:CreateLabel("Visits accessible houses and saves matching scans to HouseFS/autoscan. Cost means estimated furniture + textures, excluding the house purchase price.", "info")
-	AutoScan:CreateDropdown({ Name = "Visit", Options = { "Selected player", "Everyone in server" }, CurrentOption = { autoMode }, MultipleOptions = false,
-		Callback = function(value) autoMode = type(value) == "table" and value[1] or value end })
-	local playerDropdown = AutoScan:CreateDropdown({ Name = "Player", Options = playerNames(), CurrentOption = { autoPlayer }, MultipleOptions = false,
-		Callback = function(value) autoPlayer = type(value) == "table" and value[1] or value end })
-	AutoScan:CreateButton({ Name = "Refresh players", Callback = function()
-		playerDropdown:Refresh(playerNames(), true)
-		if autoPlayer and Players:FindFirstChild(autoPlayer) then playerDropdown:Set({ autoPlayer }) end
-	end })
-	AutoScan:CreateSection("Optional filters")
-	local houseTypeDropdown = AutoScan:CreateDropdown({
-		Name = "House types (none selected = any)",
-		Options = houseTypeOptions,
-		CurrentOption = {},
-		MultipleOptions = true,
+
+	AutoScan:CreateLabel("Visits accessible houses and saves matching scans to HouseFS/autoscan. Estimated cost includes known furniture + textures only.", "info")
+	AutoScan:CreateDropdown({
+		Name = "Visit", Options = { "Selected player", "Everyone in server" }, CurrentOption = { autoMode }, MultipleOptions = false,
 		Callback = function(value)
-			setSelectedHouseTypes(value)
+			autoMode = type(value) == "table" and value[1] or value
+			saveAutoScanSettings()
 		end,
+	})
+	local playerDropdown = AutoScan:CreateDropdown({
+		Name = "Player", Options = playerNames(), CurrentOption = { autoPlayer }, MultipleOptions = false,
+		Callback = function(value)
+			autoPlayer = type(value) == "table" and value[1] or value
+			saveAutoScanSettings()
+		end,
+	})
+	AutoScan:CreateButton({ Name = "Refresh players", Callback = function()
+		local names = playerNames()
+		pcall(function() playerDropdown:Refresh(names, true) end)
+		if autoPlayer and Players:FindFirstChild(autoPlayer) then pcall(function() playerDropdown:Set({ autoPlayer }) end) end
+	end })
+
+	AutoScan:CreateSection("Filters")
+	local houseTypeDropdown = AutoScan:CreateDropdown({
+		Name = "House types (none selected = any)", Options = houseTypeOptions, CurrentOption = currentHouseTypeOptions(), MultipleOptions = true,
+		Callback = setSelectedHouseTypes,
 	})
 	AutoScan:CreateButton({ Name = "Clear house type selection", Callback = function()
 		selectedHouseTypes = {}
 		pcall(function() houseTypeDropdown:Set({}) end)
+		saveAutoScanSettings()
 	end })
 	AutoScan:CreateInput({ Name = "Minimum build cost (blank = no minimum)", PlaceholderText = "10000", CurrentValue = minCostText, RemoveTextAfterFocusLost = false,
 		Callback = function(value) minCostText = trim(value); saveAutoScanSettings() end })
@@ -800,17 +908,57 @@ local function loadMain()
 		Callback = function(value) maxCostText = trim(value); saveAutoScanSettings() end })
 	AutoScan:CreateInput({ Name = "Minimum furniture count (blank/0 = no minimum)", PlaceholderText = "150", CurrentValue = minFurnitureText, RemoveTextAfterFocusLost = false,
 		Callback = function(value) minFurnitureText = trim(value); saveAutoScanSettings() end })
+	AutoScan:CreateInput({ Name = "Minimum texture count (blank/0 = no minimum)", PlaceholderText = "0", CurrentValue = minTexturesText, RemoveTextAfterFocusLost = false,
+		Callback = function(value) minTexturesText = trim(value); saveAutoScanSettings() end })
+	AutoScan:CreateDropdown({
+		Name = "Unknown-price items", Options = { "Save anyway", "Skip when filtering by cost" }, CurrentOption = { unknownCostPolicy }, MultipleOptions = false,
+		Callback = function(value)
+			unknownCostPolicy = type(value) == "table" and value[1] or value
+			saveAutoScanSettings()
+		end,
+	})
+
+	AutoScan:CreateSection("Reliability")
+	AutoScan:CreateToggle({ Name = "Skip empty houses", CurrentValue = skipEmpty, Callback = function(value) skipEmpty = value; saveAutoScanSettings() end })
+	AutoScan:CreateToggle({ Name = "Anti-duplicate saves", CurrentValue = antiDuplicate, Callback = function(value) antiDuplicate = value; saveAutoScanSettings() end })
+	AutoScan:CreateToggle({ Name = "Include house type and cost in filename", CurrentValue = includeDetails, Callback = function(value) includeDetails = value; saveAutoScanSettings() end })
+	AutoScan:CreateInput({ Name = "Stable-data wait (seconds)", PlaceholderText = "4", CurrentValue = tostring(settleSeconds), RemoveTextAfterFocusLost = false,
+		Callback = function(value) settleSeconds = math.clamp(tonumber(value) or 4, 2, 15); saveAutoScanSettings() end })
+	AutoScan:CreateInput({ Name = "Retry failed house loads", PlaceholderText = "1", CurrentValue = tostring(retryCount), RemoveTextAfterFocusLost = false,
+		Callback = function(value) retryCount = math.clamp(math.floor(tonumber(value) or 1), 0, 3); saveAutoScanSettings() end })
+	AutoScan:CreateButton({ Name = "Clear anti-duplicate history", Callback = function()
+		duplicateCache = {}
+		saveDuplicateCache()
+		Rayfield:Notify({ Title = "Auto Scan", Content = "Duplicate history cleared.", Duration = 3 })
+	end })
 	autoScanSettingsReady = true
-	AutoScan:CreateToggle({ Name = "Skip empty houses", CurrentValue = true, Callback = function(value) skipEmpty = value end })
-	AutoScan:CreateToggle({ Name = "Include house type and cost in filename", CurrentValue = true, Callback = function(value) includeDetails = value end })
-	AutoScan:CreateInput({ Name = "Stable-data wait (seconds)", PlaceholderText = "5", RemoveTextAfterFocusLost = false,
-		Callback = function(value) settleSeconds = math.clamp(tonumber(value) or 5, 3, 20) end })
+	saveAutoScanSettings()
+
+	AutoScan:CreateSection("Live status")
 	local autoStatus = AutoScan:CreateLabel("Idle", "activity")
+	local statProgress = AutoScan:CreateLabel("Progress: 0 / 0", "list")
+	local statSaved = AutoScan:CreateLabel("Saved: 0", "save")
+	local statSkipped = AutoScan:CreateLabel("Skipped: 0", "circle-minus")
+	local statFailed = AutoScan:CreateLabel("Failed: 0", "circle-alert")
+	local statCurrent = AutoScan:CreateLabel("Current: -", "user")
+	local statHouse = AutoScan:CreateLabel("House: -", "home")
+
+	local function autoMessage(message)
+		pcall(function() autoStatus:Set(message) end)
+		updatestatus(message)
+	end
+	local function updateStats(index, total, saved, skipped, failed, current, info)
+		pcall(function() statProgress:Set("Progress: " .. tostring(index or 0) .. " / " .. tostring(total or 0)) end)
+		pcall(function() statSaved:Set("Saved: " .. tostring(saved or 0)) end)
+		pcall(function() statSkipped:Set("Skipped: " .. tostring(skipped or 0)) end)
+		pcall(function() statFailed:Set("Failed: " .. tostring(failed or 0)) end)
+		pcall(function() statCurrent:Set("Current: " .. tostring(current or "-")) end)
+		pcall(function() statHouse:Set("House: " .. tostring(info or "-")) end)
+	end
 
 	-- Saved auto-scan files browser + preview / delete / favorites manager.
 	AutoScan:CreateSection("Saved files")
 	local selectedSavedFile = nil
-	local favoritesPath = "HouseFS/favorites"
 	local savedFileStatus = AutoScan:CreateLabel("Selected file: -", "file-json")
 	local savedPreviewType = AutoScan:CreateLabel("House type: -", "home")
 	local savedPreviewCost = AutoScan:CreateLabel("Build cost: -", "dollar-sign")
@@ -827,36 +975,23 @@ local function loadMain()
 		pcall(function() savedPreviewPlayer:Set("Player: -") end)
 		pcall(function() savedPreviewQuality:Set("Quality: -") end)
 	end
-
 	local function getSavedAutoScanFiles()
 		local names = {}
-		if type(listfiles) ~= "function" or type(isfolder) ~= "function" then
-			return { "File listing unavailable" }
-		end
-		local folderOk, folderExists = pcall(isfolder, autoScanFilesPath)
-		if not folderOk or not folderExists then
-			return { "No saved files" }
-		end
+		if type(listfiles) ~= "function" or type(isfolder) ~= "function" then return { "File listing unavailable" } end
+		local okFolder, exists = pcall(isfolder, autoScanFilesPath)
+		if not okFolder or not exists then return { "No saved files" } end
 		local ok, files = pcall(listfiles, autoScanFilesPath)
-		if not ok or type(files) ~= "table" then
-			return { "File listing unavailable" }
-		end
+		if not ok or type(files) ~= "table" then return { "File listing unavailable" } end
 		for _, path in ipairs(files) do
 			local normalized = tostring(path):gsub("\\", "/")
 			local name = normalized:match("([^/]+)$") or normalized
-			if name:lower():sub(-5) == ".json" then
-				table.insert(names, name)
-			end
+			if name:lower():sub(-5) == ".json" then table.insert(names, name) end
 		end
-		table.sort(names, function(a, b) return a:lower() < b:lower() end)
-		if #names == 0 then return { "No saved files" } end
-		return names
+		table.sort(names, function(a,b) return a:lower() < b:lower() end)
+		return #names > 0 and names or { "No saved files" }
 	end
-
 	local function estimateQuality(cost, furnitureCount, textureCount)
-		cost = tonumber(cost) or 0
-		furnitureCount = tonumber(furnitureCount) or 0
-		textureCount = tonumber(textureCount) or 0
+		cost, furnitureCount, textureCount = tonumber(cost) or 0, tonumber(furnitureCount) or 0, tonumber(textureCount) or 0
 		if cost >= 100000 and furnitureCount >= 300 then return "Very Detailed" end
 		if cost >= 70000 and furnitureCount >= 200 then return "Detailed" end
 		if cost >= 50000 and furnitureCount >= 150 then return "Good Build" end
@@ -864,14 +999,10 @@ local function loadMain()
 		if furnitureCount >= 150 and textureCount >= 8 then return "Decor-heavy" end
 		return "Light Build"
 	end
-
 	local function escapeLuaPattern(value)
 		return tostring(value or ""):gsub("([%^%$%(%)%%%.%[%]%*%+%-%?])", "%%%1")
 	end
-
 	local function extractPlayerFromSavedName(name, buildingType)
-		-- Auto-save names begin with the player's username. Use the exact saved building type
-		-- as the delimiter so house IDs containing underscores do not break parsing.
 		local base = tostring(name or ""):gsub("%.json$", "")
 		if buildingType and tostring(buildingType) ~= "" then
 			local marker = "_" .. escapeLuaPattern(buildingType) .. "_cost%d+_"
@@ -880,23 +1011,11 @@ local function loadMain()
 		end
 		return base:match("^(.-)_%d%d%d%d%d%d%d%d_%d%d%d%d%d%d_") or "Unknown"
 	end
-
 	local function previewSavedFile(name)
 		if not name then resetSavedPreview(); return end
-		if type(readfile) ~= "function" then
-			resetSavedPreview()
-			pcall(function() savedPreviewType:Set("Preview unavailable: readfile unsupported") end)
-			return
-		end
-		local path = autoScanFilesPath .. "/" .. name
-		local ok, data = pcall(function()
-			return HttpService:JSONDecode(readfile(path))
-		end)
-		if not ok or type(data) ~= "table" then
-			resetSavedPreview()
-			pcall(function() savedPreviewType:Set("Preview unavailable: invalid JSON") end)
-			return
-		end
+		if type(readfile) ~= "function" then resetSavedPreview(); pcall(function() savedPreviewType:Set("Preview unavailable: readfile unsupported") end); return end
+		local ok, data = pcall(function() return HttpService:JSONDecode(readfile(autoScanFilesPath .. "/" .. name)) end)
+		if not ok or type(data) ~= "table" then resetSavedPreview(); pcall(function() savedPreviewType:Set("Preview unavailable: invalid JSON") end); return end
 		local furnitureCount = tonumber(data.furniture_quantity) or countfurnitures(data.furniture)
 		local textureCount = counttextures(data.textures)
 		local cost = tonumber(data.total_cost) or 0
@@ -904,278 +1023,273 @@ local function loadMain()
 		local entry = houseDB[data.building_type]
 		local display = type(entry) == "table" and tostring(entry.name or houseType) or houseType
 		local playerName = extractPlayerFromSavedName(name, data.building_type)
-		local quality = estimateQuality(cost, furnitureCount, textureCount)
 		pcall(function() savedPreviewType:Set("House type: " .. display .. " [" .. houseType .. "]") end)
 		pcall(function() savedPreviewCost:Set("Build cost: $" .. math.floor(cost)) end)
 		pcall(function() savedPreviewFurniture:Set("Furniture: " .. furnitureCount) end)
 		pcall(function() savedPreviewTextures:Set("Textures: " .. textureCount) end)
 		pcall(function() savedPreviewPlayer:Set("Player: " .. playerName) end)
-		pcall(function() savedPreviewQuality:Set("Quality: " .. quality) end)
+		pcall(function() savedPreviewQuality:Set("Quality: " .. estimateQuality(cost, furnitureCount, textureCount)) end)
 	end
-
 	local savedFilesDropdown
 	local function refreshSavedFiles(keepSelection)
 		local options = getSavedAutoScanFiles()
 		pcall(function() savedFilesDropdown:Refresh(options, true) end)
 		if keepSelection and selectedSavedFile then
 			for _, name in ipairs(options) do
-				if name == selectedSavedFile then
-					pcall(function() savedFilesDropdown:Set({ selectedSavedFile }) end)
-					previewSavedFile(selectedSavedFile)
-					return
-				end
+				if name == selectedSavedFile then pcall(function() savedFilesDropdown:Set({ selectedSavedFile }) end); previewSavedFile(selectedSavedFile); return end
 			end
 		end
 		selectedSavedFile = nil
 		pcall(function() savedFileStatus:Set("Selected file: -") end)
 		resetSavedPreview()
 	end
-
 	savedFilesDropdown = AutoScan:CreateDropdown({
-		Name = "View saved files",
-		Options = getSavedAutoScanFiles(),
-		CurrentOption = {},
-		MultipleOptions = false,
+		Name = "View saved files", Options = getSavedAutoScanFiles(), CurrentOption = {}, MultipleOptions = false,
 		Callback = function(value)
 			local name = type(value) == "table" and value[1] or value
-			if name == "No saved files" or name == "File listing unavailable" or name == nil then
-				selectedSavedFile = nil
-				pcall(function() savedFileStatus:Set("Selected file: -") end)
-				resetSavedPreview()
-				return
-			end
+			if name == "No saved files" or name == "File listing unavailable" or name == nil then selectedSavedFile = nil; pcall(function() savedFileStatus:Set("Selected file: -") end); resetSavedPreview(); return end
 			selectedSavedFile = tostring(name)
 			pcall(function() savedFileStatus:Set("Selected file: " .. selectedSavedFile) end)
 			previewSavedFile(selectedSavedFile)
 		end,
 	})
-
-	AutoScan:CreateButton({ Name = "Refresh saved files", Callback = function()
-		refreshSavedFiles(true)
-	end })
-
+	AutoScan:CreateButton({ Name = "Refresh saved files", Callback = function() refreshSavedFiles(true) end })
 	AutoScan:CreateButton({ Name = "Copy selected file path", Callback = function()
-		if not selectedSavedFile then
-			return Rayfield:Notify({ Title = "Saved Files", Content = "Select a saved file first.", Duration = 3 })
-		end
+		if not selectedSavedFile then return Rayfield:Notify({ Title = "Saved Files", Content = "Select a saved file first.", Duration = 3 }) end
 		local path = autoScanFilesPath .. "/" .. selectedSavedFile
-		if type(setclipboard) == "function" then
-			local ok = pcall(setclipboard, path)
-			if ok then return Rayfield:Notify({ Title = "Saved Files", Content = "File path copied: " .. selectedSavedFile, Duration = 3 }) end
-		end
+		if type(setclipboard) == "function" and pcall(setclipboard, path) then return Rayfield:Notify({ Title = "Saved Files", Content = "File path copied: " .. selectedSavedFile, Duration = 3 }) end
 		Rayfield:Notify({ Title = "Saved Files", Content = path, Duration = 5 })
 	end })
-
 	AutoScan:CreateButton({ Name = "Favorite selected file", Callback = function()
-		if not selectedSavedFile then
-			return Rayfield:Notify({ Title = "Favorites", Content = "Select a saved file first.", Duration = 3 })
-		end
-		if type(readfile) ~= "function" or type(writefile) ~= "function" or type(isfolder) ~= "function" or type(makefolder) ~= "function" then
-			return Rayfield:Notify({ Title = "Favorites", Content = "Your executor does not support the required file functions.", Duration = 5 })
-		end
-		local srcPath = autoScanFilesPath .. "/" .. selectedSavedFile
-		local destPath = favoritesPath .. "/" .. selectedSavedFile
+		if not selectedSavedFile then return Rayfield:Notify({ Title = "Favorites", Content = "Select a saved file first.", Duration = 3 }) end
+		if type(readfile) ~= "function" or type(writefile) ~= "function" or type(isfolder) ~= "function" or type(makefolder) ~= "function" then return Rayfield:Notify({ Title = "Favorites", Content = "Required file functions are unavailable.", Duration = 5 }) end
 		local ok, err = pcall(function()
 			if not isfolder("HouseFS") then makefolder("HouseFS") end
 			if not isfolder(favoritesPath) then makefolder(favoritesPath) end
-			local content = readfile(srcPath)
-			writefile(destPath, content)
+			writefile(favoritesPath .. "/" .. selectedSavedFile, readfile(autoScanFilesPath .. "/" .. selectedSavedFile))
 		end)
-		if not ok then
-			return Rayfield:Notify({ Title = "Favorites", Content = "Could not favorite file: " .. tostring(err):sub(1, 100), Duration = 5 })
-		end
+		if not ok then return Rayfield:Notify({ Title = "Favorites", Content = "Could not favorite file: " .. tostring(err):sub(1,100), Duration = 5 }) end
 		Rayfield:Notify({ Title = "Favorites", Content = "Saved to HouseFS/favorites: " .. selectedSavedFile, Duration = 4, Image = "heart" })
 	end })
-
 	AutoScan:CreateButton({ Name = "Delete selected saved file", Callback = function()
-		if not selectedSavedFile then
-			return Rayfield:Notify({ Title = "Saved Files", Content = "Select a saved file first.", Duration = 3 })
-		end
-		if type(delfile) ~= "function" then
-			return Rayfield:Notify({ Title = "Saved Files", Content = "Your executor does not support deleting files.", Duration = 4 })
-		end
+		if not selectedSavedFile then return Rayfield:Notify({ Title = "Saved Files", Content = "Select a saved file first.", Duration = 3 }) end
+		if type(delfile) ~= "function" then return Rayfield:Notify({ Title = "Saved Files", Content = "Deleting files is unavailable.", Duration = 4 }) end
 		local deleting = selectedSavedFile
-		local path = autoScanFilesPath .. "/" .. deleting
-		local ok, err = pcall(delfile, path)
-		if not ok then
-			return Rayfield:Notify({ Title = "Saved Files", Content = "Delete failed: " .. tostring(err):sub(1, 100), Duration = 5 })
-		end
+		local ok, err = pcall(delfile, autoScanFilesPath .. "/" .. deleting)
+		if not ok then return Rayfield:Notify({ Title = "Saved Files", Content = "Delete failed: " .. tostring(err):sub(1,100), Duration = 5 }) end
 		selectedSavedFile = nil
 		refreshSavedFiles(false)
 		Rayfield:Notify({ Title = "Saved Files", Content = "Deleted: " .. deleting, Duration = 4, Image = "trash-2" })
 	end })
 
-
-	--========================================================
-	local function autoMessage(message)
-		pcall(function() autoStatus:Set(message) end)
-		updatestatus(message)
-	end
-	local function costInfo(house)
-		local furnitureCost, textureCost, unknown = 0, 0, 0
+	-- Lightweight stability signature: no deep copy, no recursive JSON serialization every 0.5 seconds.
+	local function lightweightHouseSignature(house)
+		local furnitureCount, textureCount = 0, 0
+		local checksum = 0
 		for _, item in pairs(house.furniture or {}) do
-			local db = furnituresdb[item.id]
-			if db and type(db.cost) == "number" then furnitureCost += db.cost else unknown += 1 end
+			furnitureCount += 1
+			local id = tostring(item.id or "")
+			for i = 1, #id do checksum = (checksum * 33 + id:byte(i)) % 2147483647 end
 		end
 		for _, room in pairs(house.textures or {}) do
-			for _, category in ipairs({ "walls", "floors" }) do
-				local id = room[category]
-				if id then
-					local db = texturesdb[category] and texturesdb[category][id]
-					if db and type(db.cost) == "number" then textureCost += db.cost else unknown += 1 end
-				end
-			end
+			if room.walls then textureCount += 1; local s=tostring(room.walls); for i=1,#s do checksum=(checksum*33+s:byte(i))%2147483647 end end
+			if room.floors then textureCount += 1; local s=tostring(room.floors); for i=1,#s do checksum=(checksum*33+s:byte(i))%2147483647 end end
 		end
-		return furnitureCost, textureCost, unknown
+		return table.concat({ tostring(house.building_type or ""), tostring(furnitureCount), tostring(textureCount), tostring(checksum) }, "|")
 	end
-	-- Sort keys so dictionary iteration order does not reset the stable-data timer.
-	local function stableSignature(value)
-		if type(value) ~= "table" then return HttpService:JSONEncode(value) end
-		local keys, parts = {}, {}
-		for key in pairs(value) do table.insert(keys, key) end
-		table.sort(keys, function(a, b) return tostring(a) < tostring(b) end)
-		for _, key in ipairs(keys) do
-			table.insert(parts, HttpService:JSONEncode(tostring(key)) .. ":" .. stableSignature(value[key]))
-		end
-		return "{" .. table.concat(parts, ",") .. "}"
-	end
+
 	local function ownedBy(house, player)
 		if not house then return false end
 		local owner = house.player
 		return owner == player or owner == player.Name or owner == player.UserId
 	end
-	local function waitForHouse(player, stableWait)
-		local deadline = os.clock() + 60
+
+	local function waitForHouse(player, stableWait, timeoutSeconds)
+		local deadline = os.clock() + (timeoutSeconds or 30)
 		local lastSignature, stableSince, arrivedAt = nil, nil, nil
 		while os.clock() < deadline do
 			if autoStop then return nil, "Stopped" end
 			if player.Parent ~= Players then return nil, "Player left" end
 			local ok, house = pcall(function() return cd.get("house_interior") end)
 			if ok and ownedBy(house, player) and type(house.furniture) == "table" and house.building_type then
-				local snapshot = deepCopy(house)
-				local signature = stableSignature(serializeAutoPasteValue({
-					furniture = snapshot.furniture, textures = snapshot.textures,
-					ambiance = snapshot.ambiance, music = snapshot.music,
-					house_id = snapshot.house_id, building_type = snapshot.building_type,
-				}))
 				local now = os.clock()
 				arrivedAt = arrivedAt or now
+				local signature = lightweightHouseSignature(house)
 				if signature ~= lastSignature then lastSignature, stableSince = signature, now end
-				if now - arrivedAt >= 8 and now - stableSince >= stableWait then return snapshot end
+				if stableSince and now - arrivedAt >= 3 and now - stableSince >= stableWait then
+					return deepCopy(house)
+				end
 			else
 				lastSignature, stableSince, arrivedAt = nil, nil, nil
 			end
 			task.wait(0.5)
 		end
-		return nil, "House did not load or settle within 60 seconds"
+		return nil, "House did not load or settle"
 	end
-	local function saveAutoSnapshot(house, player, details, fc, tc)
-		local clean_house = deepCopy(house)
-		for _, item in pairs(clean_house.furniture or {}) do
-			item.creator = nil
-			item.hash = nil item.was_free = nil item.no_value = nil item.was_default = nil
-			item.item_category = nil item.item_kind = nil
-			item.door_position = nil item.last_position = nil item.on = nil
+
+	local function enterAndWait(interiors, player, stableWait, retries)
+		local lastErr = "House did not load"
+		for attempt = 1, (retries or 0) + 1 do
+			if autoStop then return nil, "Stopped" end
+			autoMessage("Entering " .. player.Name .. "'s house" .. (attempt > 1 and (" (retry " .. (attempt-1) .. ")") or ""))
+			local enterOk, enterErr = pcall(function() interiors.enter("housing", "MainDoor", { house_owner = player }) end)
+			if enterOk then
+				autoMessage("Waiting for " .. player.Name .. "'s house data")
+				local snapshot, err = waitForHouse(player, stableWait, 30)
+				if snapshot then return snapshot end
+				lastErr = err or lastErr
+			else
+				lastErr = "Enter failed: " .. tostring(enterErr):sub(1,100)
+			end
+			if autoStop then return nil, "Stopped" end
+			task.wait(1.5)
 		end
-		clean_house.total_cost = fc + tc
-		clean_house.furniture_quantity = countfurnitures(clean_house.furniture)
-		clean_house.saved_by = "Cubix-HouseCloner"
-		clean_house.properties = nil clean_house.house_id = nil clean_house.listed_for_trade = nil
-		clean_house.unique = nil clean_house.active_addons = nil clean_house.allows_coop_building = nil
-		clean_house.house_pos = nil clean_house.textures_hash = nil clean_house.player = nil
-		local encoded = HttpService:JSONEncode(serializeAutoPasteValue(clean_house))
+		return nil, lastErr
+	end
+
+	local function simpleHash(text)
+		local h = 5381
+		for i = 1, #text do h = (h * 33 + text:byte(i)) % 4294967296 end
+		return string.format("%08x", h)
+	end
+
+	local function encodeAutoSnapshot(house)
+		local encoded, err, clean, fc, tc, unknown = encodeHouseForSave(house)
+		if not encoded then return nil, err end
+		return { encoded = encoded, clean = clean, fc = fc, tc = tc, unknown = unknown, fingerprint = simpleHash(encoded) }
+	end
+
+	local function saveAutoSnapshot(prepared, house, player, details)
+		if type(writefile) ~= "function" then return nil, "writefile unavailable" end
+		local folderOk, folderErr = ensureAutoFolders()
+		if not folderOk then return nil, tostring(folderErr or "Could not create folders") end
 		local base = player.Name
-		if details then base = base .. "_" .. tostring(house.building_type) .. "_cost" .. math.floor(fc + tc) end
-		base = (sanitizeFileName(base) or "House"):sub(1, 75)
-		local suffix = os.date("%Y%m%d_%H%M%S") .. "_" .. HttpService:GenerateGUID(false):sub(1, 8)
+		if details then base = base .. "_" .. tostring(house.building_type) .. "_cost" .. math.floor(prepared.fc + prepared.tc) end
+		base = (sanitizeFileName(base) or "House"):sub(1,75)
+		local suffix = os.date("%Y%m%d_%H%M%S") .. "_" .. HttpService:GenerateGUID(false):sub(1,8)
 		local path = autoScanFilesPath .. "/" .. base .. "_" .. suffix .. ".json"
-		if autoStop then return nil end
-		writefile(path, encoded)
-		-- Keep the saved-files dropdown current after every successful auto-save.
+		if autoStop then return nil, "Stopped" end
+		local ok, err = pcall(writefile, path, prepared.encoded)
+		if not ok then return nil, "writefile failed: " .. tostring(err):sub(1,100) end
 		task.defer(function() refreshSavedFiles(true) end)
 		return path
 	end
-	AutoScan:CreateButton({ Name = "Stop Auto Scan", Callback = function()
-		autoStop = true
-		autoMessage(autoRunning and "Stopping (waiting for current teleport to return)" or "Idle")
-	end })
-	AutoScan:CreateButton({ Name = "Start Teleport + Scan + Save", Callback = function()
-		if autoRunning then return end
-		local minCost = minCostText ~= "" and tonumber(minCostText) or nil
-		local maxCost = maxCostText ~= "" and tonumber(maxCostText) or nil
-		local minFurniture = minFurnitureText ~= "" and tonumber(minFurnitureText) or nil
-		if (minCostText ~= "" and (not minCost or minCost < 0)) or (maxCostText ~= "" and (not maxCost or maxCost < 0))
-			or (minCost and maxCost and minCost > maxCost) then
-			return Rayfield:Notify({ Title = "Filters", Content = "Enter valid nonnegative costs; minimum must not exceed maximum.", Duration = 5 })
+
+	local function parseNonnegative(textValue, whole)
+		if textValue == "" then return nil, true end
+		local n = tonumber(textValue)
+		if not n or n < 0 or (whole and n % 1 ~= 0) then return nil, false end
+		if whole and n == 0 then return nil, true end
+		return n, true
+	end
+
+	local function startAutoScan()
+		if autoRunning then return false end
+		local minCost, ok1 = parseNonnegative(minCostText, false)
+		local maxCost, ok2 = parseNonnegative(maxCostText, false)
+		local minFurniture, ok3 = parseNonnegative(minFurnitureText, true)
+		local minTextures, ok4 = parseNonnegative(minTexturesText, true)
+		if not ok1 or not ok2 or not ok3 or not ok4 or (minCost and maxCost and minCost > maxCost) then
+			Rayfield:Notify({ Title = "Filters", Content = "Check your minimum/maximum cost and count filters.", Duration = 5 })
+			return false
 		end
-		if minFurnitureText ~= "" and (not minFurniture or minFurniture < 0 or minFurniture % 1 ~= 0) then
-			return Rayfield:Notify({ Title = "Filters", Content = "Minimum furniture count must be a whole number of 0 or higher.", Duration = 5 })
-		end
-		if minFurniture == 0 then minFurniture = nil end
 		local targets = {}
 		if autoMode == "Everyone in server" then
 			targets = Players:GetPlayers()
-			table.sort(targets, function(a, b) return a.Name < b.Name end)
+			table.sort(targets, function(a,b) return a.Name < b.Name end)
 		else
 			local target = autoPlayer and Players:FindFirstChild(autoPlayer)
 			if target then table.insert(targets, target) end
 		end
-		if #targets == 0 then return Rayfield:Notify({ Title = "Auto Scan", Content = "Select a player who is still in this server.", Duration = 5 }) end
-		local wantedTypes, details, ignoreEmpty, stableWait = {}, includeDetails, skipEmpty, settleSeconds
+		if #targets == 0 then Rayfield:Notify({ Title = "Auto Scan", Content = "Select a player who is still in this server.", Duration = 5 }); return false end
+
+		local wantedTypes = {}
 		for id in pairs(selectedHouseTypes) do wantedTypes[id] = true end
+		local details, ignoreEmpty, stableWait, retries = includeDetails, skipEmpty, settleSeconds, retryCount
+		local duplicateEnabled, unknownPolicy = antiDuplicate, unknownCostPolicy
 		autoRunning, autoStop = true, false
+		updateStats(0, #targets, 0, 0, 0, "-", "-")
+
 		task.spawn(function()
 			local saved, skipped, failed = 0, 0, 0
-			local ok, err = pcall(function()
-				if type(isfolder) ~= "function" or type(makefolder) ~= "function" or type(writefile) ~= "function" then error("Local file saving is unavailable") end
-				if not isfolder("HouseFS") then makefolder("HouseFS") end
-				if not isfolder(autoScanFilesPath) then makefolder(autoScanFilesPath) end
+			local ok, outerErr = pcall(function()
+				local folderOk, folderErr = ensureAutoFolders()
+				if not folderOk or type(writefile) ~= "function" then error(folderErr or "Local file saving unavailable") end
 				local load = require(ReplicatedStorage:WaitForChild("Fsys")).load
 				local interiors = load("InteriorsM")
 				for index, player in ipairs(targets) do
 					if autoStop then break end
 					updateprog(index .. "/" .. #targets)
 					updateitem(player.Name)
+					updateStats(index, #targets, saved, skipped, failed, player.Name, "Loading...")
 					local visitOk, outcome, reason = pcall(function()
 						if player.Parent ~= Players then return "skipped", "Player left" end
-						autoMessage("Entering " .. player.Name .. "'s house")
-						interiors.enter("housing", "MainDoor", { house_owner = player })
-						if autoStop then return "stopped" end
-						autoMessage("Waiting for " .. player.Name .. "'s house data")
-						local snapshot, loadErr = waitForHouse(player, stableWait)
+						local snapshot, loadErr = enterAndWait(interiors, player, stableWait, retries)
 						if autoStop then return "stopped" end
 						if not snapshot then return "failed", loadErr end
-						local fc, tc, unknown = costInfo(snapshot)
 						local furnitureCount = countfurnitures(snapshot.furniture)
+						local textureCount = counttextures(snapshot.textures)
+						local fc, tc, unknown = getHouseCostInfo(snapshot)
 						local kind = tostring(snapshot.building_type)
 						local entry = houseDB[snapshot.building_type]
 						local display = type(entry) == "table" and tostring(entry.name or kind) or kind
-						setscaninfo(furnitureCount, fc, counttextures(snapshot.textures), tc, snapshot.ambiance and "Yes" or "No", kind)
+						local info = display .. " | $" .. math.floor(fc+tc) .. " | " .. furnitureCount .. " furniture"
+						updateStats(index, #targets, saved, skipped, failed, player.Name, info)
+						setscaninfo(furnitureCount, fc, textureCount, tc, snapshot.ambiance and "Yes" or "No", kind)
 						if next(wantedTypes) ~= nil and not wantedTypes[kind] then return "skipped", "House type filter" end
 						if ignoreEmpty and furnitureCount == 0 then return "skipped", "Empty house" end
 						if minFurniture and furnitureCount < minFurniture then return "skipped", "Furniture count " .. furnitureCount .. " < " .. minFurniture end
-						if (minCost or maxCost) and unknown > 0 then return "skipped", "Cost unknown for some items" end
-						if (minCost and fc + tc < minCost) or (maxCost and fc + tc > maxCost) then return "skipped", "Cost filter" end
-						local path = saveAutoSnapshot(snapshot, player, details, fc, tc)
-						if not path then return "stopped" end
+						if minTextures and textureCount < minTextures then return "skipped", "Texture count " .. textureCount .. " < " .. minTextures end
+						if (minCost or maxCost) and unknown > 0 and unknownPolicy == "Skip when filtering by cost" then return "skipped", "Unknown prices: " .. unknown end
+						local estimatedCost = fc + tc
+						if minCost and estimatedCost < minCost then return "skipped", "Cost below minimum" end
+						if maxCost and estimatedCost > maxCost then return "skipped", "Cost above maximum" end
+
+						local prepared, prepErr = encodeAutoSnapshot(snapshot)
+						if not prepared then return "failed", "Encode failed: " .. tostring(prepErr):sub(1,100) end
+						local duplicateKey = tostring(player.UserId) .. ":" .. kind .. ":" .. prepared.fingerprint
+						if duplicateEnabled and duplicateCache[duplicateKey] then return "skipped", "Duplicate house" end
+						local path, saveErr = saveAutoSnapshot(prepared, snapshot, player, details)
+						if not path then if saveErr == "Stopped" then return "stopped" end; return "failed", saveErr end
+						duplicateCache[duplicateKey] = { file = path, saved_at = os.time(), player = player.Name, building_type = kind }
+						if duplicateEnabled then saveDuplicateCache() end
 						savedhouse = snapshot
-						notifyTelegramSave(path, display .. " [" .. kind .. "]", player.Name, fc + tc, unknown)
+						notifyTelegramSave(path, display .. " [" .. kind .. "]", player.Name, prepared.fc + prepared.tc, prepared.unknown)
 						return "saved", path
 					end)
+
 					if autoStop or outcome == "stopped" then break end
-					if not visitOk then failed += 1; autoMessage(player.Name .. ": " .. tostring(outcome):sub(1, 120))
-					elseif outcome == "saved" then saved += 1; autoMessage("Saved " .. player.Name)
-					elseif outcome == "skipped" then skipped += 1; autoMessage("Skipped " .. player.Name .. ": " .. tostring(reason))
-					else failed += 1; autoMessage("Failed " .. player.Name .. ": " .. tostring(reason)) end
-					task.wait(1)
+					if not visitOk then
+						failed += 1
+						autoMessage(player.Name .. ": " .. tostring(outcome):sub(1,120))
+					elseif outcome == "saved" then
+						saved += 1
+						autoMessage("Saved " .. player.Name)
+					elseif outcome == "skipped" then
+						skipped += 1
+						autoMessage("Skipped " .. player.Name .. ": " .. tostring(reason))
+					else
+						failed += 1
+						autoMessage("Failed " .. player.Name .. ": " .. tostring(reason))
+					end
+					updateStats(index, #targets, saved, skipped, failed, player.Name, reason or outcome or "-")
+					task.wait(0.75)
 				end
 			end)
 			autoRunning = false
 			local summary = saved .. " saved, " .. skipped .. " skipped, " .. failed .. " failed."
-			if not ok then summary = summary .. " " .. tostring(err):sub(1, 160) end
+			if not ok then summary = summary .. " " .. tostring(outerErr):sub(1,160) end
 			autoMessage((autoStop and "Stopped. " or "Finished. ") .. summary)
+			updateStats(#targets, #targets, saved, skipped, failed, "-", "-")
 			Rayfield:Notify({ Title = "Auto Scan", Content = summary, Duration = 7 })
 		end)
+		return true
+	end
+
+	AutoScan:CreateButton({ Name = "Start Teleport + Scan + Save", Callback = startAutoScan })
+	AutoScan:CreateButton({ Name = "Stop Auto Scan", Callback = function()
+		autoStop = true
+		autoMessage(autoRunning and "Stopping..." or "Idle")
 	end })
 
 	Rayfield:Notify({ Title = "Cubix", Content = "Scan, Save & Auto Scan is ready", Duration = 4 })
