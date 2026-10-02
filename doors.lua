@@ -1,8 +1,29 @@
+-- Magic Door single-instance guard.
+-- Re-executing this updated script shuts down the previous UPDATED instance first.
+local GLOBAL_ENV = (getgenv and getgenv()) or _G
+
+if type(GLOBAL_ENV.__MagicDoorShutdown) == "function" then
+    pcall(GLOBAL_ENV.__MagicDoorShutdown)
+    GLOBAL_ENV.__MagicDoorShutdown = nil
+end
+
 -- Auto Farm order: load player/data -> saved position -> list house -> door -> chat.
 local function LoadMain()
     if not game:IsLoaded() then game.Loaded:Wait() end
     --// LOAD RAYFIELD
     local Rayfield = loadstring(game:HttpGet("https://sirius.menu/rayfield"))()
+
+    --// SINGLE-INSTANCE / CLEANUP TRACKING
+    local runtimeAlive = true
+    local trackedConnections = {}
+    local shutdownMagicDoor
+
+    local function trackConnection(connection)
+        if connection then
+            table.insert(trackedConnections, connection)
+        end
+        return connection
+    end
 
     --// SERVICES
     local HttpService = game:GetService("HttpService")
@@ -43,6 +64,7 @@ local function LoadMain()
         RetryFailedPlacement = true,
         AutoFarm = false,
         AutoServerHop = false,
+        NoTradeHop = false,
         AutoAcceptTrades = false,
         TradeMode = "Everyone",
         TradeWhitelist = "",
@@ -119,11 +141,14 @@ local function LoadMain()
     -- The saved values remain in the file, but automation starts OFF each execution.
     settings.AutoFarm = false
     settings.AutoServerHop = false
+    -- NoTradeHop is restored by Rayfield configuration only when its saved toggle is ON.
+    settings.NoTradeHop = false
 
     --// RUNTIME STATE
     local state = {
         farmSession = 0,
         hopSession = 0,
+        noTradeHopSession = 0,
         placing = false,
         sendingChat = false,
         teleporting = false,
@@ -131,6 +156,11 @@ local function LoadMain()
         chatSentThisServer = false,
         preparedJobId = nil,
         houseListed = false,
+        inTrade = false,
+        tradeSignalName = "None",
+        lastTradeAcceptedAt = os.clock(),
+        activeDoorInstance = nil,
+        activeDoorPlacedAt = nil,
         sessionStartedAt = os.clock(),
         stats = {
             DoorsPlaced = 0,
@@ -436,6 +466,73 @@ local function LoadMain()
         return false, "no_door"
     end
 
+    --// PLACED MAGIC DOOR TRACKING
+    -- Tracks the actual placed door so Auto Farm can wait for it to disappear
+    -- instead of repeatedly trying to place another door on a timer.
+    local function looksLikeMagicDoorInstance(obj)
+        if not obj then return false end
+        local name = string.lower(tostring(obj.Name or ""))
+        return name:find("magic_house_door", 1, true) ~= nil
+            or (name:find("magic", 1, true) ~= nil and name:find("door", 1, true) ~= nil)
+    end
+
+    local function getInstancePosition(obj)
+        if not obj or not obj.Parent then return nil end
+        if obj:IsA("BasePart") then
+            return obj.Position
+        elseif obj:IsA("Model") then
+            local ok, pivot = pcall(function() return obj:GetPivot() end)
+            if ok and pivot then return pivot.Position end
+        end
+
+        local part = obj:FindFirstChildWhichIsA("BasePart", true)
+        return part and part.Position or nil
+    end
+
+    local function normalizeDoorCandidate(obj)
+        if not obj then return nil end
+
+        local current = obj
+        for _ = 1, 5 do
+            if looksLikeMagicDoorInstance(current) then
+                return current
+            end
+            current = current.Parent
+            if not current or current == workspace then break end
+        end
+
+        return looksLikeMagicDoorInstance(obj) and obj or nil
+    end
+
+    local function doorStillExists(door)
+        return typeof(door) == "Instance"
+            and door.Parent ~= nil
+            and door:IsDescendantOf(workspace)
+    end
+
+    local function waitForActiveDoorToDisappear(isActive)
+        local door = state.activeDoorInstance
+        if not doorStillExists(door) then
+            state.activeDoorInstance = nil
+            return true
+        end
+
+        debugPrint("Waiting for placed Magic Door to disappear:", door:GetFullName())
+
+        while canRun(isActive) and doorStillExists(door) do
+            task.wait(0.2)
+        end
+
+        if not canRun(isActive) then
+            return false
+        end
+
+        state.activeDoorInstance = nil
+        state.activeDoorPlacedAt = nil
+        debugPrint("Placed Magic Door disappeared; replacement is allowed.")
+        return true
+    end
+
     local function placeMagicDoorOnce(isActive)
         if not canRun(isActive) then return false, "cancelled" end
         local character, root = getCharacterRoot(5, isActive)
@@ -451,7 +548,7 @@ local function LoadMain()
         if not canRun(isActive) then return false, "cancelled" end
         if player.Character ~= character or not root.Parent then return false, "character_changed" end
         local placeCFrame = root.CFrame
-            * CFrame.new(0, -3, -math.max(2, settings.PlacementDistance))
+            * CFrame.new(0, -4, -math.max(2, settings.PlacementDistance))
             * CFrame.Angles(0, math.rad(180), 0)
 
         local remote
@@ -463,21 +560,57 @@ local function LoadMain()
             return false, "place_remote_missing"
         end
 
-        if not canRun(isActive) then return false, "cancelled" end
+        -- Capture the newly-created door without doing continuous Workspace scans.
+        -- DescendantAdded is connected only around the placement request.
+        local detectedDoor = nil
+        local captureConnection
+        captureConnection = workspace.DescendantAdded:Connect(function(obj)
+            if detectedDoor then return end
+
+            local candidate = normalizeDoorCandidate(obj)
+            if not candidate then return end
+
+            task.defer(function()
+                if detectedDoor or not candidate.Parent then return end
+                local pos = getInstancePosition(candidate)
+                if pos and (pos - placeCFrame.Position).Magnitude <= 25 then
+                    detectedDoor = candidate
+                end
+            end)
+        end)
+
+        if not canRun(isActive) then
+            captureConnection:Disconnect()
+            return false, "cancelled"
+        end
+
         local success, result = pcall(function()
             return remote:InvokeServer(placeCFrame)
         end)
 
-        if not canRun(isActive) then return false, "cancelled" end
+        if not canRun(isActive) then
+            captureConnection:Disconnect()
+            return false, "cancelled"
+        end
         if not success then
+            captureConnection:Disconnect()
             return false, "invoke_failed"
         end
 
         if not result then
+            captureConnection:Disconnect()
             return false, "invalid_spot_or_cooldown"
         end
 
-        if not waitWhileActive(0.6, isActive) then return false, "cancelled" end
+        -- Some builds may return the created Instance directly.
+        if typeof(result) == "Instance" then
+            detectedDoor = normalizeDoorCandidate(result) or result
+        end
+
+        if not waitWhileActive(0.6, isActive) then
+            captureConnection:Disconnect()
+            return false, "cancelled"
+        end
 
         pcall(function()
             local useRemote = Router.get("PlaceableToolAPI/UseMagicHouseDoor")
@@ -485,6 +618,25 @@ local function LoadMain()
                 useRemote:FireServer()
             end
         end)
+
+        -- Give replication a short window to expose the placed door.
+        local detectDeadline = os.clock() + 1.5
+        while not detectedDoor and os.clock() < detectDeadline and canRun(isActive) do
+            task.wait(0.05)
+        end
+        captureConnection:Disconnect()
+
+        if detectedDoor and detectedDoor.Parent then
+            state.activeDoorInstance = detectedDoor
+            state.activeDoorPlacedAt = os.clock()
+            debugPrint("Tracking placed Magic Door:", detectedDoor:GetFullName())
+        else
+            -- Do not spam placement if the exact instance could not be resolved.
+            -- A short fallback delay preserves the previous safe behavior.
+            state.activeDoorInstance = nil
+            state.activeDoorPlacedAt = os.clock()
+            debugPrint("Placed door instance was not resolved; using placement-delay fallback.")
+        end
 
         state.stats.DoorsPlaced += 1
         return true, "placed"
@@ -561,6 +713,8 @@ local function LoadMain()
     local function stopFarm()
         settings.AutoFarm = false
         state.farmSession += 1
+        state.activeDoorInstance = nil
+        state.activeDoorPlacedAt = nil
         saveConfig()
     end
 
@@ -644,12 +798,37 @@ local function LoadMain()
 
                 local independentChatStarted = false
 
+                local firstDoorPlacement = true
+
                 while characterIsActive() do
+                    -- If we have a tracked door, do not attempt another placement
+                    -- until that exact door has disappeared from Workspace.
+                    if state.activeDoorInstance and doorStillExists(state.activeDoorInstance) then
+                        if not waitForActiveDoorToDisappear(characterIsActive) then
+                            break
+                        end
+                    elseif not firstDoorPlacement then
+                        -- Fallback only when the game did not expose the created door Instance.
+                        -- This avoids rapid placement spam while keeping compatibility.
+                        if not waitWhileActive(
+                            math.max(1, settings.PlaceDelay),
+                            characterIsActive
+                        ) then
+                            break
+                        end
+                    end
+
+                    if not characterIsActive() then break end
+
                     local placed = autoPlaceMagicDoor(false, characterIsActive)
                     if not characterIsActive() then break end
 
                     if placed then
+                        -- In After Every Door mode, this is now tied to an actual
+                        -- successful placement. When a tracked door disappears,
+                        -- the replacement is placed first and THEN the message sends.
                         maybeSendChatAfterPlacement(characterIsActive)
+                        firstDoorPlacement = false
 
                         if not independentChatStarted then
                             independentChatStarted = true
@@ -669,13 +848,15 @@ local function LoadMain()
                                 end
                             end)
                         end
-                    end
-
-                    if not waitWhileActive(
-                        math.max(1, settings.PlaceDelay),
-                        characterIsActive
-                    ) then
-                        break
+                    else
+                        -- Placement failed: wait before retrying so we do not hammer
+                        -- CreatePlaceable every frame/loop iteration.
+                        if not waitWhileActive(
+                            math.max(1, settings.PlaceDelay),
+                            characterIsActive
+                        ) then
+                            break
+                        end
                     end
                 end
 
@@ -699,12 +880,12 @@ local function LoadMain()
         return teleportToTradingHub(showNotification, isActive)
     end
 
-    TeleportService.TeleportInitFailed:Connect(function(failedPlayer, result, errorMessage)
+    trackConnection(TeleportService.TeleportInitFailed:Connect(function(failedPlayer, result, errorMessage)
         if failedPlayer == player then
             state.teleporting = false
             debugPrint("TeleportInitFailed", tostring(result), tostring(errorMessage))
         end
-    end)
+    end))
 
     local function stopServerHop()
         settings.AutoServerHop = false
@@ -737,6 +918,287 @@ local function LoadMain()
             end
         end)
     end
+
+    -- Forward declarations used by the no-trade timer and trade UI watcher.
+    local cachedTradeGui
+    local updateCachedTradeState
+
+    --// NO-TRADE 5 MINUTE HOP
+    local NO_TRADE_HOP_SECONDS = 5 * 60
+    local noTradeHopToggle
+
+    local function resetNoTradeTimer(reason)
+        state.lastTradeAcceptedAt = os.clock()
+        debugPrint("No-trade timer reset:", tostring(reason or "trade accepted"))
+    end
+
+    local function stopNoTradeHop()
+        settings.NoTradeHop = false
+        state.noTradeHopSession += 1
+        saveConfig()
+    end
+
+    local function startNoTradeHop()
+        if settings.NoTradeHop then
+            return
+        end
+
+        state.noTradeHopSession += 1
+        local mySession = state.noTradeHopSession
+        settings.NoTradeHop = true
+        resetNoTradeTimer("toggle enabled")
+        saveConfig()
+
+        local function isActive()
+            return runtimeAlive
+                and settings.NoTradeHop
+                and state.noTradeHopSession == mySession
+        end
+
+        task.spawn(function()
+            while isActive() do
+                local elapsed = os.clock() - state.lastTradeAcceptedAt
+                local remaining = NO_TRADE_HOP_SECONDS - elapsed
+
+                if remaining <= 0 then
+                    -- Revalidate the cached trade GUI before trusting inTrade.
+                    -- Do NOT reset another full five minutes just because a trade
+                    -- is active; wait for it to close, then hop immediately.
+                    if state.inTrade and cachedTradeGui then
+                        updateCachedTradeState()
+                    end
+
+                    if state.inTrade then
+                        debugPrint("No-trade timer expired; waiting for active trade to close.")
+                    elseif not state.teleporting then
+                        notify(
+                            "No Trade Hop",
+                            "No trade accepted for 5 minutes. Hopping to another Trading Hub...",
+                            4
+                        )
+
+                        local requested = serverHop(false, isActive)
+
+                        -- The current instance should stop trying after a successful
+                        -- teleport request. If it failed, begin another 5-minute window.
+                        if requested then
+                            break
+                        else
+                            resetNoTradeTimer("hop request failed")
+                        end
+                    end
+                end
+
+                task.wait(1)
+            end
+        end)
+    end
+
+    local function markTradeAccepted(source)
+        resetNoTradeTimer(source or "trade accepted")
+        debugPrint("Accepted/entered trade detected:", tostring(source))
+    end
+
+    --// ACTIVE TRADE UI DETECTION (LOW-LAG / EVENT-DRIVEN)
+    -- We do ONE initial search for the trade container, then cache it and
+    -- watch only its Visible/Enabled property. No constant PlayerGui scans.
+    local PlayerGui = player:WaitForChild("PlayerGui")
+    cachedTradeGui = nil
+    local tradeGuiPropertyConnection = nil
+    local tradeGuiAncestryConnection = nil
+    local tradeGuiAncestorConnections = {}
+
+    -- A child trade frame can remain Visible=true while one of its parents is
+    -- hidden. Check the complete GUI ancestry so we don't leave inTrade stuck.
+    local function guiIsEffectivelyVisible(obj)
+        if not obj or not obj.Parent then
+            return false
+        end
+
+        local current = obj
+        while current and current ~= PlayerGui do
+            if current:IsA("ScreenGui") then
+                if not current.Enabled then
+                    return false
+                end
+            elseif current:IsA("GuiObject") then
+                if not current.Visible then
+                    return false
+                end
+            end
+            current = current.Parent
+        end
+
+        return current == PlayerGui
+    end
+
+    local function isTradeNamedContainer(obj)
+        if not obj then return false end
+        if not (obj:IsA("ScreenGui") or obj:IsA("Frame") or obj:IsA("CanvasGroup")) then
+            return false
+        end
+
+        local name = string.lower(obj.Name or "")
+        return name:find("trade", 1, true) ~= nil
+    end
+
+    local function hasTradeAction(obj)
+        -- Only called on trade-named containers, never on every UI object.
+        for _, descendant in ipairs(obj:GetDescendants()) do
+            local descendantName = string.lower(descendant.Name or "")
+            if descendantName:find("accept", 1, true)
+                or descendantName:find("decline", 1, true)
+                or descendantName:find("confirm", 1, true)
+                or descendantName:find("offer", 1, true) then
+                return true
+            end
+        end
+
+        return false
+    end
+
+    local function isTradeGuiCandidate(obj)
+        return isTradeNamedContainer(obj) and hasTradeAction(obj)
+    end
+
+    local function setTradeUiActive(active, source)
+        active = active == true
+
+        if active and not state.inTrade then
+            state.inTrade = true
+            state.tradeSignalName = source or "Trade UI"
+            markTradeAccepted("manual/active trade UI")
+        elseif not active and state.inTrade then
+            state.inTrade = false
+            state.tradeSignalName = source or "Trade UI closed"
+        end
+    end
+
+    local function disconnectCachedTradeGuiSignals()
+        if tradeGuiPropertyConnection then
+            pcall(function() tradeGuiPropertyConnection:Disconnect() end)
+            tradeGuiPropertyConnection = nil
+        end
+
+        if tradeGuiAncestryConnection then
+            pcall(function() tradeGuiAncestryConnection:Disconnect() end)
+            tradeGuiAncestryConnection = nil
+        end
+
+        for _, connection in ipairs(tradeGuiAncestorConnections) do
+            pcall(function() connection:Disconnect() end)
+        end
+        table.clear(tradeGuiAncestorConnections)
+    end
+
+    updateCachedTradeState = function()
+        if not runtimeAlive then return end
+
+        if not cachedTradeGui or not cachedTradeGui.Parent then
+            setTradeUiActive(false, "Trade UI removed")
+            return
+        end
+
+        setTradeUiActive(
+            guiIsEffectivelyVisible(cachedTradeGui),
+            "UI: " .. tostring(cachedTradeGui:GetFullName())
+        )
+    end
+
+    local function bindTradeGui(candidate)
+        if not runtimeAlive or not candidate or candidate == cachedTradeGui then
+            return
+        end
+
+        disconnectCachedTradeGuiSignals()
+        cachedTradeGui = candidate
+
+        local propertyName = candidate:IsA("ScreenGui") and "Enabled" or "Visible"
+
+        local ok, propertyConnection = pcall(function()
+            return candidate:GetPropertyChangedSignal(propertyName):Connect(updateCachedTradeState)
+        end)
+
+        if ok and propertyConnection then
+            tradeGuiPropertyConnection = propertyConnection
+            trackConnection(propertyConnection)
+        end
+
+        -- Also watch parent GUI visibility. Adopt Me often hides a parent frame
+        -- while leaving the inner trade frame itself Visible=true.
+        local ancestor = candidate.Parent
+        while ancestor and ancestor ~= PlayerGui do
+            local ancestorProperty = nil
+            if ancestor:IsA("ScreenGui") then
+                ancestorProperty = "Enabled"
+            elseif ancestor:IsA("GuiObject") then
+                ancestorProperty = "Visible"
+            end
+
+            if ancestorProperty then
+                local watchObject = ancestor
+                local watchProperty = ancestorProperty
+                local watchOk, connection = pcall(function()
+                    return watchObject:GetPropertyChangedSignal(watchProperty):Connect(updateCachedTradeState)
+                end)
+                if watchOk and connection then
+                    table.insert(tradeGuiAncestorConnections, connection)
+                    trackConnection(connection)
+                end
+            end
+            ancestor = ancestor.Parent
+        end
+
+        tradeGuiAncestryConnection = candidate.AncestryChanged:Connect(function(_, parent)
+            if not runtimeAlive then return end
+
+            if parent == nil then
+                setTradeUiActive(false, "Trade UI removed")
+                disconnectCachedTradeGuiSignals()
+                cachedTradeGui = nil
+            end
+        end)
+        trackConnection(tradeGuiAncestryConnection)
+
+        updateCachedTradeState()
+        debugPrint("Cached trade GUI:", candidate:GetFullName())
+    end
+
+    local function tryBindTradeGuiFrom(obj)
+        if not runtimeAlive or cachedTradeGui then
+            return
+        end
+
+        -- Check only the added object and its ancestors. This is cheap compared
+        -- with rescanning the entire PlayerGui tree after every UI change.
+        local current = obj
+        while current and current ~= PlayerGui do
+            if isTradeNamedContainer(current) and isTradeGuiCandidate(current) then
+                bindTradeGui(current)
+                return
+            end
+            current = current.Parent
+        end
+    end
+
+    -- One-time startup discovery only. This replaces the old 0.35-second polling.
+    task.defer(function()
+        if not runtimeAlive or cachedTradeGui then return end
+
+        for _, obj in ipairs(PlayerGui:GetDescendants()) do
+            if not runtimeAlive or cachedTradeGui then break end
+            if isTradeNamedContainer(obj) and isTradeGuiCandidate(obj) then
+                bindTradeGui(obj)
+                break
+            end
+        end
+    end)
+
+    -- After startup, only inspect newly-added objects and their ancestors.
+    trackConnection(PlayerGui.DescendantAdded:Connect(function(obj)
+        if not runtimeAlive or cachedTradeGui then return end
+        task.defer(tryBindTradeGuiFrom, obj)
+    end))
 
     --// TRADE HELPERS
     local function resolvePlayer(obj)
@@ -783,8 +1245,8 @@ local function LoadMain()
     end)
 
     if TradeRequestEvent then
-        TradeRequestEvent.OnClientEvent:Connect(function(...)
-            if not settings.AutoAcceptTrades then
+        trackConnection(TradeRequestEvent.OnClientEvent:Connect(function(...)
+            if not runtimeAlive or not settings.AutoAcceptTrades then
                 return
             end
 
@@ -805,10 +1267,11 @@ local function LoadMain()
 
                 if accepted then
                     state.stats.TradesAccepted += 1
+                    markTradeAccepted("auto accepted trade from " .. tostring(fromPlayer.Name))
                     debugPrint("Accepted trade from", fromPlayer.Name)
                 end
             end
-        end)
+        end))
     else
         warn("[MagicDoor] TradeRequestReceived event not found.")
     end
@@ -818,7 +1281,9 @@ local function LoadMain()
         Name = "Magic Door",
         LoadingTitle = "Magic Door Utility",
         ConfigurationSaving = {
-            Enabled = false,
+            Enabled = true,
+            FolderName = "MagicDoorConfigs",
+            FileName = "RayfieldConfig",
         },
         KeySystem = false,
     })
@@ -829,6 +1294,30 @@ local function LoadMain()
     assert(MainTab, "[MagicDoor] Rayfield failed to create Main tab")
     assert(SettingsTab, "[MagicDoor] Rayfield failed to create Settings tab")
     assert(type(MainTab.CreateButton) == "function", "[MagicDoor] This Rayfield build does not support Tab:CreateButton")
+
+    --// TOP: NO-TRADE HOP
+    MainTab:CreateSection("⏱️ Trade Timeout")
+
+    noTradeHopToggle = MainTab:CreateToggle({
+        Name = "Hop If No Trade For 5 Minutes",
+        CurrentValue = false,
+        Flag = "HopIfNoTrade5Min",
+        Callback = function(value)
+            if value then
+                startNoTradeHop()
+                notify(
+                    "No Trade Hop",
+                    "Enabled. The 5-minute timer resets whenever you accept/enter a trade.",
+                    4
+                )
+            else
+                stopNoTradeHop()
+                notify("No Trade Hop", "Disabled.", 2)
+            end
+        end,
+    })
+
+    MainTab:CreateLabel("If no trade is accepted for 5 minutes, it hops through the Trading Hub.")
 
     --// FARM UI
     MainTab:CreateSection("🪄 Magic Door Farm")
@@ -1025,6 +1514,26 @@ local function LoadMain()
         Callback = function(text)
             settings.TradeWhitelist = tostring(text or "")
             saveConfig()
+        end,
+    })
+
+    MainTab:CreateButton({
+        Name = "Show Trade / Hop Timer Status",
+        Callback = function()
+            local elapsed = math.max(0, os.clock() - state.lastTradeAcceptedAt)
+            local remaining = math.max(0, NO_TRADE_HOP_SECONDS - elapsed)
+
+            notify(
+                "Trade Timer",
+                string.format(
+                    "%s | In trade: %s | Time left: %dm %02ds",
+                    settings.NoTradeHop and "ENABLED" or "DISABLED",
+                    state.inTrade and "YES" or "NO",
+                    math.floor(remaining / 60),
+                    math.floor(remaining % 60)
+                ),
+                6
+            )
         end,
     })
 
@@ -1294,6 +1803,42 @@ local function LoadMain()
     })
 
     refreshHouseList()
+
+    --// REGISTER CLEAN SHUTDOWN FOR THE NEXT EXECUTION
+    shutdownMagicDoor = function()
+        if not runtimeAlive then
+            return
+        end
+
+        runtimeAlive = false
+
+        -- Stop all automation loops owned by this instance.
+        settings.AutoFarm = false
+        settings.AutoServerHop = false
+        settings.NoTradeHop = false
+
+        state.farmSession += 1
+        state.hopSession += 1
+        state.noTradeHopSession += 1
+        state.teleportRequest += 1
+
+        for _, connection in ipairs(trackedConnections) do
+            pcall(function()
+                connection:Disconnect()
+            end)
+        end
+        table.clear(trackedConnections)
+
+        pcall(function()
+            Rayfield:Destroy()
+        end)
+
+        if GLOBAL_ENV.__MagicDoorShutdown == shutdownMagicDoor then
+            GLOBAL_ENV.__MagicDoorShutdown = nil
+        end
+    end
+
+    GLOBAL_ENV.__MagicDoorShutdown = shutdownMagicDoor
 
     -- Optional join teleport never starts a separate door/chat loop.
     -- Starting/stopping Auto Farm invalidates this task so it cannot move you later.
