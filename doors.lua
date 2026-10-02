@@ -1,4 +1,6 @@
+-- Auto Farm order: load player/data -> saved position -> list house -> door -> chat.
 local function LoadMain()
+    if not game:IsLoaded() then game.Loaded:Wait() end
     --// LOAD RAYFIELD
     local Rayfield = loadstring(game:HttpGet("https://raw.githubusercontent.com/SiriusSoftwareLtd/Rayfield/main/source.lua"))()
 
@@ -14,8 +16,6 @@ local function LoadMain()
         task.wait()
         player = Players.LocalPlayer
     end
-
-    repeat task.wait() until game:IsLoaded()
 
     --// MODULES
     local Fsys = require(ReplicatedStorage:WaitForChild("Fsys")).load
@@ -127,6 +127,7 @@ local function LoadMain()
         placing = false,
         sendingChat = false,
         teleporting = false,
+        teleportRequest = 0,
         chatSentThisServer = false,
         sessionStartedAt = os.clock(),
         stats = {
@@ -134,6 +135,7 @@ local function LoadMain()
             PlacementFailures = 0,
             ChatsSent = 0,
             ServersVisited = 1,
+            HubRequests = 0,
             TradesAccepted = 0,
         },
         visitedServers = {},
@@ -145,49 +147,113 @@ local function LoadMain()
 
     --// TELEPORT TO TRADING HUB
     local function teleportToTradingHub()
+    local function teleportToTradingHub(showNotification, isActive)
+        if isActive and not isActive() then return false, "cancelled" end
         if state.teleporting then
             notify("Trading Hub", "A teleport is already in progress.", 2)
             return false
+            if showNotification ~= false then
+                notify("Trading Hub", "A teleport is already in progress.", 2)
+            end
+            return false, "already_teleporting"
         end
 
         state.teleporting = true
         notify("Trading Hub", "Teleporting to Trading Hub...", 2)
+        state.teleportRequest += 1
+        local requestId = state.teleportRequest
+        local sourceJobId = game.JobId
+        if showNotification ~= false then notify("Trading Hub", "Teleporting to Trading Hub...", 2) end
 
         local ok, err = pcall(function()
+        local ok, requested = pcall(function()
             TradingHubButtonPressed:FireServer("trading_teleporter_dialog", "Trading Server")
             task.wait(0.5)
+            if isActive and not isActive() then return false end
             TradingHubRequestTeleport:FireServer("trading", false)
+            return true
         end)
 
         if not ok then
+        if not ok or not requested then
             state.teleporting = false
             warn("[MagicDoor] Trading Hub teleport failed:", err)
             notify("Trading Hub", "Teleport failed.", 3)
             return false
+            if not ok then
+                warn("[MagicDoor] Trading Hub teleport failed:", requested)
+                if showNotification ~= false then notify("Trading Hub", "Teleport failed.", 3) end
+                return false, tostring(requested)
+            end
+            return false, "cancelled"
         end
 
         return true
+        state.stats.HubRequests += 1
+        -- A remote can return without starting a teleport or raising TeleportInitFailed.
+        -- Release only this request's lock if we are still here after the timeout.
+        task.delay(30, function()
+            if state.teleportRequest == requestId and state.teleporting and game.JobId == sourceJobId then
+                state.teleporting = false
+                debugPrint("Trading Hub request timed out; another attempt is allowed.")
+                if showNotification ~= false then
+                    notify("Trading Hub", "Teleport request timed out. Try again.", 3)
+                end
+            end
+        end)
+        return true, "teleport_requested"
     end
 
-    local function getCharacterRoot(timeout)
-        timeout = timeout or 10
-        local character = player.Character or player.CharacterAdded:Wait()
-        local started = os.clock()
+    local function canRun(isActive)
+        return not isActive or isActive()
+    end
 
-        while os.clock() - started < timeout do
+    local function waitWhileActive(seconds, isActive)
+        local deadline = os.clock() + seconds
+        while os.clock() < deadline do
+            if not canRun(isActive) then return false end
+            task.wait(math.min(0.1, math.max(0, deadline - os.clock())))
+        end
+        return canRun(isActive)
+    end
+
+    local function getCharacterRoot(timeout, isActive)
+        local deadline = os.clock() + (timeout or 10)
+        while os.clock() < deadline do
+            if not canRun(isActive) then return nil, nil end
+            local character = player.Character
             local root = character and character:FindFirstChild("HumanoidRootPart")
-            if root then
+            local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+            if character and character.Parent and root and humanoid and humanoid.Health > 0 then
                 return character, root
             end
-
-            if player.Character ~= character then
-                character = player.Character
-            end
-
             task.wait(0.1)
         end
-
         return nil, nil
+    end
+
+    local function waitForPlayerReady(isActive)
+        local deadline = os.clock() + 60
+        local readyCharacter, readyRoot, readySince
+        while os.clock() < deadline do
+            if not canRun(isActive) then return false, "cancelled" end
+            local character, root = getCharacterRoot(0.25, isActive)
+            local dataOk, inventory, houses = pcall(function()
+                return ClientData.get("inventory"), ClientData.get("house_manager")
+            end)
+            if game:IsLoaded() and root and not root.Anchored and dataOk
+                and type(inventory) == "table" and type(houses) == "table" then
+                if readyCharacter ~= character or readyRoot ~= root then
+                    readyCharacter, readyRoot, readySince = character, root, os.clock()
+                end
+                -- Give spawn initialization time to finish after character/data become ready.
+                if os.clock() - readySince >= 2 then return true, character end
+            else
+                readyCharacter, readyRoot, readySince = nil, nil, nil
+            end
+            task.wait(0.1)
+        end
+        return false, "Player or house data did not load within 60 seconds."
     end
 
     local function cframeToTable(cf)
@@ -199,6 +265,12 @@ local function LoadMain()
             return nil
         end
 
+        for index = 1, 12 do
+            local value = data[index]
+            if type(value) ~= "number" or value ~= value or math.abs(value) == math.huge then
+                return nil
+            end
+        end
         local ok, cf = pcall(function()
             return CFrame.new(table.unpack(data, 1, 12))
         end)
@@ -206,42 +278,50 @@ local function LoadMain()
         return ok and cf or nil
     end
 
-    local function teleportToSavedPosition(showNotification)
+    local function teleportToSavedPosition(showNotification, isActive)
+        local function failed(reason)
+            if showNotification and reason ~= "cancelled" then notify("Position", reason, 3) end
+            return false, reason
+        end
         local saved = tableToCFrame(settings.SavedCFrame)
-        if not saved then
-            if showNotification then
-                notify("Position", "No saved position yet.", 3)
-            end
-            return false
-        end
-
-        local _, root = getCharacterRoot(10)
-        if not root then
-            if showNotification then
-                notify("Position", "HumanoidRootPart was not found.", 3)
-            end
-            return false
-        end
+        if not saved then return failed("Save a valid position first.") end
+        local character, root = getCharacterRoot(10, isActive)
+        if not canRun(isActive) then return failed("cancelled") end
+        if not root then return failed("A live character was not found.") end
 
         root.CFrame = saved
-        if showNotification then
-            notify("Position", "Teleported to saved position.", 2)
+        root.AssemblyLinearVelocity = Vector3.zero
+        root.AssemblyAngularVelocity = Vector3.zero
+        -- Do not list/place while the character is still spawning or being moved back.
+        if not waitWhileActive(1, isActive) then return failed("cancelled") end
+        local humanoid = character:FindFirstChildOfClass("Humanoid")
+        if player.Character ~= character or not root.Parent or not humanoid or humanoid.Health <= 0 then
+            return failed("Character changed during teleport. Start again after spawning.")
         end
+        if (root.Position - saved.Position).Magnitude > 6 then
+            return failed("Teleport did not settle at the saved position. Try again.")
+        end
+        if showNotification then notify("Position", "Teleported to saved position.", 2) end
+        return true, character
+    end
+
+    local function listHouseForTrade(isActive)
+        if not canRun(isActive) then return false, "cancelled" end
+        local ok, result = pcall(function()
+            -- Reuse the existing zero-argument remote; the server decides whether listing is allowed.
+            return Router.get("HousingAPI/ListHouse"):InvokeServer()
+        end)
+        if not canRun(isActive) then return false, "cancelled" end
+        if not ok then return false, "House listing request failed: " .. tostring(result) end
+        if result == false then return false, "The server rejected the house listing." end
+        -- A nil return confirms request completion, not the replicated listing state.
+        if not waitWhileActive(0.5, isActive) then return false, "cancelled" end
         return true
     end
 
-    --// OPTIONAL STARTUP TELEPORT
-    task.spawn(function()
-        if not settings.AutoTeleportOnJoin then
-            return
-        end
-
-        task.wait(2)
-        teleportToSavedPosition(false)
-    end)
-
     --// CHAT
-    local function sendMessage(msg)
+    local function sendMessage(msg, isActive)
+        if not canRun(isActive) then return false, "cancelled" end
         if state.sendingChat or type(msg) ~= "string" or msg == "" then
             return false, "empty_or_busy"
         end
@@ -254,7 +334,7 @@ local function LoadMain()
                 local channels = TextChatService:WaitForChild("TextChannels", 5)
                 local general = channels and channels:FindFirstChild("RBXGeneral")
 
-                if general then
+                if general and canRun(isActive) then
                     general:SendAsync(msg)
                     sent = true
                 end
@@ -262,7 +342,7 @@ local function LoadMain()
                 local chatEvents = ReplicatedStorage:FindFirstChild("DefaultChatSystemChatEvents")
                 local remote = chatEvents and chatEvents:FindFirstChild("SayMessageRequest")
 
-                if remote then
+                if remote and canRun(isActive) then
                     remote:FireServer(msg, "All")
                     sent = true
                 end
@@ -285,7 +365,7 @@ local function LoadMain()
     end
 
     --// MAGIC DOOR
-    local function autoEquipMagicDoor()
+    local function autoEquipMagicDoor(isActive)
         local ok, inventory = pcall(function()
             return ClientData.get("inventory")
         end)
@@ -304,6 +384,7 @@ local function LoadMain()
                         if itemId:find("magic_house_door", 1, true)
                             or itemKind:find("magic_house_door", 1, true) then
 
+                            if not canRun(isActive) then return false, "cancelled" end
                             local equipOk, equipErr = pcall(function()
                                 ClientToolManager.backpack_equip(item)
                             end)
@@ -312,7 +393,7 @@ local function LoadMain()
                                 return false, tostring(equipErr)
                             end
 
-                            task.wait(0.25)
+                            if not waitWhileActive(0.25, isActive) then return false, "cancelled" end
                             return true, "equipped"
                         end
                     end
@@ -323,17 +404,20 @@ local function LoadMain()
         return false, "no_door"
     end
 
-    local function placeMagicDoorOnce()
-        local _, root = getCharacterRoot(5)
+    local function placeMagicDoorOnce(isActive)
+        if not canRun(isActive) then return false, "cancelled" end
+        local character, root = getCharacterRoot(5, isActive)
         if not root then
             return false, "no_character"
         end
 
-        local equipped, equipReason = autoEquipMagicDoor()
+        local equipped, equipReason = autoEquipMagicDoor(isActive)
         if not equipped then
             return false, equipReason
         end
 
+        if not canRun(isActive) then return false, "cancelled" end
+        if player.Character ~= character or not root.Parent then return false, "character_changed" end
         local placeCFrame = root.CFrame
             * CFrame.new(0, -3, -math.max(2, settings.PlacementDistance))
             * CFrame.Angles(0, math.rad(180), 0)
@@ -347,10 +431,12 @@ local function LoadMain()
             return false, "place_remote_missing"
         end
 
+        if not canRun(isActive) then return false, "cancelled" end
         local success, result = pcall(function()
             return remote:InvokeServer(placeCFrame)
         end)
 
+        if not canRun(isActive) then return false, "cancelled" end
         if not success then
             return false, "invoke_failed"
         end
@@ -359,11 +445,11 @@ local function LoadMain()
             return false, "invalid_spot_or_cooldown"
         end
 
-        task.wait(0.6)
+        if not waitWhileActive(0.6, isActive) then return false, "cancelled" end
 
         pcall(function()
             local useRemote = Router.get("PlaceableToolAPI/UseMagicHouseDoor")
-            if useRemote then
+            if useRemote and canRun(isActive) then
                 useRemote:FireServer()
             end
         end)
@@ -372,7 +458,7 @@ local function LoadMain()
         return true, "placed"
     end
 
-    local function autoPlaceMagicDoor(showErrors)
+    local function autoPlaceMagicDoor(showErrors, isActive)
         if state.placing then
             return false, "busy"
         end
@@ -382,7 +468,12 @@ local function LoadMain()
         local lastReason = "unknown"
 
         for attempt = 1, maxAttempts do
-            local success, reason = placeMagicDoorOnce()
+            local callOk, success, reason = pcall(placeMagicDoorOnce, isActive)
+            if not callOk then success, reason = false, tostring(success) end
+            if not canRun(isActive) or reason == "cancelled" then
+                state.placing = false
+                return false, "cancelled"
+            end
             lastReason = reason
 
             if success then
@@ -396,7 +487,10 @@ local function LoadMain()
             end
 
             if attempt < maxAttempts then
-                task.wait(0.75)
+                if not waitWhileActive(0.75, isActive) then
+                    state.placing = false
+                    return false, "cancelled"
+                end
             end
         end
 
@@ -415,22 +509,23 @@ local function LoadMain()
     end
 
     --// CHAT MODE HELPER
-    local function maybeSendChatAfterPlacement()
-        if settings.ChatMessage == "" then
+    local function maybeSendChatAfterPlacement(isActive)
+        if not canRun(isActive) or settings.ChatMessage == "" then
             return
         end
 
         if settings.ChatMode == "After Every Door" then
-            sendMessage(settings.ChatMessage)
+            sendMessage(settings.ChatMessage, isActive)
         elseif settings.ChatMode == "Once Per Server" and not state.chatSentThisServer then
-            local ok = sendMessage(settings.ChatMessage)
+            local ok = sendMessage(settings.ChatMessage, isActive)
             if ok then
                 state.chatSentThisServer = true
             end
         end
     end
 
-    --// FARM LOOP
+    --// ORDERED FARM: READY -> TELEPORT -> LIST HOUSE -> DOOR -> CHAT
+    local autoFarmToggle
     local function stopFarm()
         settings.AutoFarm = false
         state.farmSession += 1
@@ -438,42 +533,68 @@ local function LoadMain()
     end
 
     local function startFarm()
+        if settings.AutoFarm then return end
         state.farmSession += 1
         local mySession = state.farmSession
         settings.AutoFarm = true
         saveConfig()
+        local function isActive()
+            return settings.AutoFarm and state.farmSession == mySession and not state.teleporting
+        end
+        local function abort(reason)
+            if state.farmSession ~= mySession then return end
+            stopFarm()
+            if autoFarmToggle then pcall(function() autoFarmToggle:Set(false) end) end
+            if reason ~= "cancelled" then notify("Auto Farm stopped", tostring(reason), 5) end
+        end
 
         task.spawn(function()
-            while settings.AutoFarm and state.farmSession == mySession do
-                local placed = autoPlaceMagicDoor(false)
+            local runOk, runError = pcall(function()
+                notify("Auto Farm", "Waiting for your player and house data to load...", 3)
+                local ready, readyReason = waitForPlayerReady(isActive)
+                if not ready then abort(readyReason); return end
 
-                if placed then
-                    maybeSendChatAfterPlacement()
+                notify("Auto Farm", "Teleporting to your saved position...", 2)
+                local moved, preparedCharacter = teleportToSavedPosition(false, isActive)
+                if not moved then abort(preparedCharacter); return end
+                local function characterIsActive()
+                    local humanoid = preparedCharacter:FindFirstChildOfClass("Humanoid")
+                    return isActive() and player.Character == preparedCharacter
+                        and preparedCharacter.Parent ~= nil and humanoid ~= nil and humanoid.Health > 0
                 end
 
-                local delayLeft = math.max(1, settings.PlaceDelay)
-                while delayLeft > 0 and settings.AutoFarm and state.farmSession == mySession do
-                    local step = math.min(0.25, delayLeft)
-                    task.wait(step)
-                    delayLeft -= step
-                end
-            end
-        end)
+                notify("Auto Farm", "Listing your house for trade...", 2)
+                local listed, listReason = listHouseForTrade(characterIsActive)
+                if not listed then abort(listReason); return end
 
-        -- Independent chat mode uses its own session-safe loop.
-        task.spawn(function()
-            while settings.AutoFarm and state.farmSession == mySession do
-                if settings.ChatMode == "Independent" and settings.ChatMessage ~= "" then
-                    sendMessage(settings.ChatMessage)
+                local independentChatStarted = false
+                while characterIsActive() do
+                    local placed = autoPlaceMagicDoor(false, characterIsActive)
+                    if not characterIsActive() then break end
+                    if placed then
+                        maybeSendChatAfterPlacement(characterIsActive)
+                        if not independentChatStarted then
+                            independentChatStarted = true
+                            -- Even Independent mode waits for the first successful door.
+                            task.spawn(function()
+                                while characterIsActive() do
+                                    if settings.ChatMode == "Independent" and settings.ChatMessage ~= "" then
+                                        sendMessage(settings.ChatMessage, characterIsActive)
+                                    end
+                                    if not waitWhileActive(math.max(1, settings.ChatDelay), characterIsActive) then break end
+                                end
+                            end)
+                        end
+                    end
+                    if not waitWhileActive(math.max(1, settings.PlaceDelay), characterIsActive) then break end
                 end
-
-                local delayLeft = math.max(1, settings.ChatDelay)
-                while delayLeft > 0 and settings.AutoFarm and state.farmSession == mySession do
-                    local step = math.min(0.25, delayLeft)
-                    task.wait(step)
-                    delayLeft -= step
+                if isActive() then
+                    abort("Character respawned. Turn Auto Farm on again to repeat the setup.")
+                else
+                    abort("cancelled")
                 end
-            end
+            end)
+            if not runOk then abort(runError) end
         end)
     end
 
@@ -489,6 +610,9 @@ local function LoadMain()
 
         local body = game:HttpGet(url)
         return HttpService:JSONDecode(body)
+    --// SERVER HOP THROUGH TRADING HUB MATCHMAKING
+    local function serverHop(showNotification, isActive)
+        return teleportToTradingHub(showNotification, isActive)
     end
 
     local function chooseServer()
@@ -592,6 +716,9 @@ local function LoadMain()
         local mySession = state.hopSession
         settings.AutoServerHop = true
         saveConfig()
+        local function isActive()
+            return settings.AutoServerHop and state.hopSession == mySession
+        end
 
         task.spawn(function()
             while settings.AutoServerHop and state.hopSession == mySession do
@@ -605,6 +732,7 @@ local function LoadMain()
 
                 if settings.AutoServerHop and state.hopSession == mySession then
                     serverHop(false)
+                    serverHop(false, isActive)
                 end
             end
         end)
@@ -701,13 +829,14 @@ local function LoadMain()
     --// FARM UI
     MainTab:CreateSection("🪄 Magic Door Farm")
 
-    MainTab:CreateToggle({
+    MainTab:CreateLabel("Auto Farm: load player > saved position > list house > door > message.")
+    autoFarmToggle = MainTab:CreateToggle({
         Name = "Auto Farm (Door + Chat)",
         CurrentValue = false,
         Callback = function(value)
             if value then
                 startFarm()
-                notify("Auto Farm", "Started.", 2)
+                notify("Auto Farm", "Starting the ordered setup...", 2)
             else
                 stopFarm()
                 notify("Auto Farm", "Stopped.", 2)
@@ -840,20 +969,8 @@ local function LoadMain()
     MainTab:CreateButton({
         Name = "List House for Trade",
         Callback = function()
-            local success, houseInterior = pcall(function()
-                return ClientData.get("house_interior")
-            end)
-
-            if not success or not houseInterior then
-                notify("House", "Be inside your house first.", 3)
-                return
-            end
-
-            local ok = pcall(function()
-                Router.get("HousingAPI/ListHouse"):InvokeServer()
-            end)
-
-            notify("House", ok and "House listed." or "Failed to list house.", 2)
+            local ok, reason = listHouseForTrade()
+            notify("House", ok and "House listing request completed." or tostring(reason), 3)
         end,
     })
 
@@ -915,6 +1032,7 @@ local function LoadMain()
 
     --// SERVER HOP UI
     MainTab:CreateSection("🌍 Server Hop")
+    MainTab:CreateLabel("Auto Hop requests a Trading Hub teleport after each Hop Delay.")
 
     MainTab:CreateToggle({
         Name = "Auto Server Hop",
@@ -923,6 +1041,7 @@ local function LoadMain()
             if value then
                 startServerHop()
                 notify("Server Hop", "Auto hop started.", 2)
+                notify("Server Hop", "Auto hop to Trading Hub started.", 2)
             else
                 stopServerHop()
                 notify("Server Hop", "Auto hop stopped.", 2)
@@ -984,10 +1103,12 @@ local function LoadMain()
                 "Session Stats",
                 string.format(
                     "Doors: %d | Failed: %d | Chats: %d | Servers: %d | Trades: %d | Runtime: %dm %ds",
+                    "Doors: %d | Failed: %d | Chats: %d | Hub requests: %d | Trades: %d | Runtime: %dm %ds",
                     state.stats.DoorsPlaced,
                     state.stats.PlacementFailures,
                     state.stats.ChatsSent,
                     state.stats.ServersVisited,
+                    state.stats.HubRequests,
                     state.stats.TradesAccepted,
                     minutes,
                     seconds
@@ -1004,6 +1125,7 @@ local function LoadMain()
             state.stats.PlacementFailures = 0
             state.stats.ChatsSent = 0
             state.stats.ServersVisited = 1
+            state.stats.HubRequests = 0
             state.stats.TradesAccepted = 0
             state.sessionStartedAt = os.clock()
             notify("Session", "Stats reset.", 2)
@@ -1086,7 +1208,8 @@ local function LoadMain()
         table.clear(houseNames)
         table.clear(houseMap)
 
-        local houses = ClientData.get("house_manager") or {}
+        local dataOk, houses = pcall(function() return ClientData.get("house_manager") end)
+        if not dataOk or type(houses) ~= "table" then houses = {} end
 
         for _, house in pairs(houses) do
             local displayName = house.name or ("House " .. tostring(house.house_id))
@@ -1167,7 +1290,21 @@ local function LoadMain()
 
     refreshHouseList()
 
-    notify("Magic Door", "Updated utility loaded.", 3)
+    -- Optional join teleport never starts a separate door/chat loop.
+    -- Starting/stopping Auto Farm invalidates this task so it cannot move you later.
+    if settings.AutoTeleportOnJoin then
+        local startupSession = state.farmSession
+        task.spawn(function()
+            local function startupIsActive()
+                return settings.AutoTeleportOnJoin and state.farmSession == startupSession
+                    and not settings.AutoFarm and not state.teleporting
+            end
+            local ready = waitForPlayerReady(startupIsActive)
+            if ready and startupIsActive() then teleportToSavedPosition(true, startupIsActive) end
+        end)
+    end
+
+    notify("Magic Door", "Ready. Save a position, enter a message, then enable Auto Farm.", 4)
 end
 
 LoadMain()
