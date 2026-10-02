@@ -2,7 +2,7 @@
 local function LoadMain()
     if not game:IsLoaded() then game.Loaded:Wait() end
     --// LOAD RAYFIELD
-    local Rayfield = loadstring(game:HttpGet("https://raw.githubusercontent.com/SiriusSoftwareLtd/Rayfield/main/source.lua"))()
+    local Rayfield = loadstring(game:HttpGet("https://sirius.menu/rayfield"))()
 
     --// SERVICES
     local HttpService = game:GetService("HttpService")
@@ -146,12 +146,12 @@ local function LoadMain()
     end
 
     --// TELEPORT TO TRADING HUB
-    local function teleportToTradingHub()
     local function teleportToTradingHub(showNotification, isActive)
-        if isActive and not isActive() then return false, "cancelled" end
+        if isActive and not isActive() then
+            return false, "cancelled"
+        end
+
         if state.teleporting then
-            notify("Trading Hub", "A teleport is already in progress.", 2)
-            return false
             if showNotification ~= false then
                 notify("Trading Hub", "A teleport is already in progress.", 2)
             end
@@ -159,48 +159,57 @@ local function LoadMain()
         end
 
         state.teleporting = true
-        notify("Trading Hub", "Teleporting to Trading Hub...", 2)
         state.teleportRequest += 1
+
         local requestId = state.teleportRequest
         local sourceJobId = game.JobId
-        if showNotification ~= false then notify("Trading Hub", "Teleporting to Trading Hub...", 2) end
 
-        local ok, err = pcall(function()
+        if showNotification ~= false then
+            notify("Trading Hub", "Teleporting to Trading Hub...", 2)
+        end
+
         local ok, requested = pcall(function()
             TradingHubButtonPressed:FireServer("trading_teleporter_dialog", "Trading Server")
             task.wait(0.5)
-            if isActive and not isActive() then return false end
+
+            if isActive and not isActive() then
+                return false
+            end
+
             TradingHubRequestTeleport:FireServer("trading", false)
             return true
         end)
 
-        if not ok then
         if not ok or not requested then
             state.teleporting = false
-            warn("[MagicDoor] Trading Hub teleport failed:", err)
-            notify("Trading Hub", "Teleport failed.", 3)
-            return false
+
             if not ok then
                 warn("[MagicDoor] Trading Hub teleport failed:", requested)
-                if showNotification ~= false then notify("Trading Hub", "Teleport failed.", 3) end
+                if showNotification ~= false then
+                    notify("Trading Hub", "Teleport failed.", 3)
+                end
                 return false, tostring(requested)
             end
+
             return false, "cancelled"
         end
 
-        return true
         state.stats.HubRequests += 1
-        -- A remote can return without starting a teleport or raising TeleportInitFailed.
-        -- Release only this request's lock if we are still here after the timeout.
+
         task.delay(30, function()
-            if state.teleportRequest == requestId and state.teleporting and game.JobId == sourceJobId then
+            if state.teleportRequest == requestId
+                and state.teleporting
+                and game.JobId == sourceJobId then
+
                 state.teleporting = false
                 debugPrint("Trading Hub request timed out; another attempt is allowed.")
+
                 if showNotification ~= false then
                     notify("Trading Hub", "Teleport request timed out. Try again.", 3)
                 end
             end
         end)
+
         return true, "teleport_requested"
     end
 
@@ -598,104 +607,9 @@ local function LoadMain()
         end)
     end
 
-    --// SERVER HOP
-    local function fetchServerPage(cursor)
-        local url = "https://games.roblox.com/v1/games/"
-            .. game.PlaceId
-            .. "/servers/Public?sortOrder=Asc&limit=100"
-
-        if cursor and cursor ~= "" then
-            url ..= "&cursor=" .. HttpService:UrlEncode(cursor)
-        end
-
-        local body = game:HttpGet(url)
-        return HttpService:JSONDecode(body)
     --// SERVER HOP THROUGH TRADING HUB MATCHMAKING
     local function serverHop(showNotification, isActive)
         return teleportToTradingHub(showNotification, isActive)
-    end
-
-    local function chooseServer()
-        local cursor = nil
-        local pagesChecked = 0
-        local fallback = nil
-
-        repeat
-            pagesChecked += 1
-            local ok, page = pcall(fetchServerPage, cursor)
-            if not ok or type(page) ~= "table" then
-                return nil, "server_request_failed"
-            end
-
-            if type(page.data) == "table" then
-                for _, server in ipairs(page.data) do
-                    local id = server.id
-                    local playing = tonumber(server.playing) or 0
-                    local maxPlayers = tonumber(server.maxPlayers) or 0
-                    local freeSlots = maxPlayers - playing
-                    local notCurrent = id and id ~= game.JobId
-                    local notVisited = not state.visitedServers[id]
-
-                    if notCurrent and freeSlots >= settings.MinFreeSlots then
-                        if not settings.AvoidVisitedServers or notVisited then
-                            return id, "found"
-                        end
-
-                        if not fallback then
-                            fallback = id
-                        end
-                    end
-                end
-            end
-
-            cursor = page.nextPageCursor
-        until not cursor or cursor == "" or pagesChecked >= 10
-
-        if fallback then
-            return fallback, "fallback_visited"
-        end
-
-        return nil, "no_server_found"
-    end
-
-    local function serverHop(showNotification)
-        if state.teleporting then
-            return false, "already_teleporting"
-        end
-
-        state.teleporting = true
-
-        if showNotification then
-            notify("Server Hop", "Finding a new server...", 2)
-        end
-
-        local serverId, reason = chooseServer()
-        if not serverId then
-            state.teleporting = false
-            if showNotification then
-                notify("Server Hop", "No suitable server found.", 3)
-            end
-            return false, reason
-        end
-
-        state.visitedServers[serverId] = true
-        debugPrint("Teleporting to", serverId, reason)
-
-        local ok, err = pcall(function()
-            TeleportService:TeleportToPlaceInstance(game.PlaceId, serverId, player)
-        end)
-
-        if not ok then
-            state.teleporting = false
-            warn("[MagicDoor] Server hop failed:", err)
-            if showNotification then
-                notify("Server Hop", "Teleport failed.", 3)
-            end
-            return false, tostring(err)
-        end
-
-        state.stats.ServersVisited += 1
-        return true, "teleport_started"
     end
 
     TeleportService.TeleportInitFailed:Connect(function(failedPlayer, result, errorMessage)
@@ -731,7 +645,6 @@ local function LoadMain()
                 end
 
                 if settings.AutoServerHop and state.hopSession == mySession then
-                    serverHop(false)
                     serverHop(false, isActive)
                 end
             end
@@ -825,6 +738,10 @@ local function LoadMain()
 
     local MainTab = Window:CreateTab("🪄 Main", 4483362458)
     local SettingsTab = Window:CreateTab("⚙️ Settings", 4483362458)
+
+    assert(MainTab, "[MagicDoor] Rayfield failed to create Main tab")
+    assert(SettingsTab, "[MagicDoor] Rayfield failed to create Settings tab")
+    assert(type(MainTab.CreateButton) == "function", "[MagicDoor] This Rayfield build does not support Tab:CreateButton")
 
     --// FARM UI
     MainTab:CreateSection("🪄 Magic Door Farm")
@@ -1040,7 +957,6 @@ local function LoadMain()
         Callback = function(value)
             if value then
                 startServerHop()
-                notify("Server Hop", "Auto hop started.", 2)
                 notify("Server Hop", "Auto hop to Trading Hub started.", 2)
             else
                 stopServerHop()
@@ -1102,12 +1018,10 @@ local function LoadMain()
             notify(
                 "Session Stats",
                 string.format(
-                    "Doors: %d | Failed: %d | Chats: %d | Servers: %d | Trades: %d | Runtime: %dm %ds",
                     "Doors: %d | Failed: %d | Chats: %d | Hub requests: %d | Trades: %d | Runtime: %dm %ds",
                     state.stats.DoorsPlaced,
                     state.stats.PlacementFailures,
                     state.stats.ChatsSent,
-                    state.stats.ServersVisited,
                     state.stats.HubRequests,
                     state.stats.TradesAccepted,
                     minutes,
