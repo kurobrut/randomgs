@@ -137,11 +137,9 @@ local function LoadMain()
         end
     end
 
-    -- Safety: do not silently resume automation merely because it was enabled last session.
-    -- The saved values remain in the file, but automation starts OFF each execution.
-    settings.AutoFarm = false
-    settings.AutoServerHop = false
-    -- NoTradeHop is restored by Rayfield configuration only when its saved toggle is ON.
+    -- Auto Farm and Auto Server Hop are allowed to resume from the saved config.
+    -- This is important after a Trading Hub/server hop when the script auto-executes again.
+    -- NoTradeHop continues to be restored by its Rayfield toggle/Flag.
     settings.NoTradeHop = false
 
     --// RUNTIME STATE
@@ -149,6 +147,8 @@ local function LoadMain()
         farmSession = 0,
         hopSession = 0,
         noTradeHopSession = 0,
+        farmLoopActive = false,
+        hopLoopActive = false,
         placing = false,
         sendingChat = false,
         teleporting = false,
@@ -161,6 +161,7 @@ local function LoadMain()
         lastTradeAcceptedAt = os.clock(),
         activeDoorInstance = nil,
         activeDoorPlacedAt = nil,
+        noTradeExpiredLogged = false,
         sessionStartedAt = os.clock(),
         stats = {
             DoorsPlaced = 0,
@@ -712,6 +713,7 @@ local function LoadMain()
     local autoFarmToggle
     local function stopFarm()
         settings.AutoFarm = false
+        state.farmLoopActive = false
         state.farmSession += 1
         state.activeDoorInstance = nil
         state.activeDoorPlacedAt = nil
@@ -719,10 +721,16 @@ local function LoadMain()
     end
 
     local function startFarm()
-        if settings.AutoFarm then return end
+        if state.farmLoopActive then
+            settings.AutoFarm = true
+            saveConfig()
+            return
+        end
+
         state.farmSession += 1
         local mySession = state.farmSession
         settings.AutoFarm = true
+        state.farmLoopActive = true
         saveConfig()
 
         local function isActive()
@@ -889,14 +897,22 @@ local function LoadMain()
 
     local function stopServerHop()
         settings.AutoServerHop = false
+        state.hopLoopActive = false
         state.hopSession += 1
         saveConfig()
     end
 
     local function startServerHop()
+        if state.hopLoopActive then
+            settings.AutoServerHop = true
+            saveConfig()
+            return
+        end
+
         state.hopSession += 1
         local mySession = state.hopSession
         settings.AutoServerHop = true
+        state.hopLoopActive = true
         saveConfig()
         local function isActive()
             return settings.AutoServerHop and state.hopSession == mySession
@@ -929,6 +945,7 @@ local function LoadMain()
 
     local function resetNoTradeTimer(reason)
         state.lastTradeAcceptedAt = os.clock()
+        state.noTradeExpiredLogged = false
         debugPrint("No-trade timer reset:", tostring(reason or "trade accepted"))
     end
 
@@ -969,7 +986,10 @@ local function LoadMain()
                     end
 
                     if state.inTrade then
-                        debugPrint("No-trade timer expired; waiting for active trade to close.")
+                        if not state.noTradeExpiredLogged then
+                            state.noTradeExpiredLogged = true
+                            debugPrint("No-trade timer expired; waiting for active trade to close.")
+                        end
                     elseif not state.teleporting then
                         notify(
                             "No Trade Hop",
@@ -1006,7 +1026,9 @@ local function LoadMain()
     cachedTradeGui = nil
     local tradeGuiPropertyConnection = nil
     local tradeGuiAncestryConnection = nil
+    local tradeGuiDescendantAddedConnection = nil
     local tradeGuiAncestorConnections = {}
+    local tradeActionConnections = {}
 
     -- A child trade frame can remain Visible=true while one of its parents is
     -- hidden. Check the complete GUI ancestry so we don't leave inTrade stuck.
@@ -1042,19 +1064,61 @@ local function LoadMain()
         return name:find("trade", 1, true) ~= nil
     end
 
+    local function getTradeActionKind(obj)
+        if not obj then return nil end
+        local name = string.lower(obj.Name or "")
+
+        if name:find("accept", 1, true) then return "accept" end
+        if name:find("decline", 1, true) then return "decline" end
+        if name:find("confirm", 1, true) then return "confirm" end
+        if name:find("offer", 1, true) then return "offer" end
+
+        return nil
+    end
+
     local function hasTradeAction(obj)
-        -- Only called on trade-named containers, never on every UI object.
+        -- Candidate discovery may happen while the trade UI is hidden, so this
+        -- only checks whether the container owns trade-action controls.
         for _, descendant in ipairs(obj:GetDescendants()) do
-            local descendantName = string.lower(descendant.Name or "")
-            if descendantName:find("accept", 1, true)
-                or descendantName:find("decline", 1, true)
-                or descendantName:find("confirm", 1, true)
-                or descendantName:find("offer", 1, true) then
+            if getTradeActionKind(descendant) then
                 return true
             end
         end
 
         return false
+    end
+
+    local function countVisibleTradeActionKinds(container)
+        if not container or not container.Parent then
+            return 0
+        end
+
+        local kinds = {}
+        for _, descendant in ipairs(container:GetDescendants()) do
+            local kind = getTradeActionKind(descendant)
+            if kind and descendant:IsA("GuiObject") and guiIsEffectivelyVisible(descendant) then
+                kinds[kind] = true
+            end
+        end
+
+        local count = 0
+        for _ in pairs(kinds) do
+            count += 1
+        end
+        return count
+    end
+
+    local function tradeGuiIsActuallyActive(container)
+        local visibleKinds = countVisibleTradeActionKinds(container)
+
+        -- Be conservative when ENTERING a trade so a persistent background
+        -- trade container cannot create a false positive. Once a real trade has
+        -- been detected, keep it active while at least one trade action remains.
+        if state.inTrade then
+            return visibleKinds >= 1
+        end
+
+        return visibleKinds >= 2
     end
 
     local function isTradeGuiCandidate(obj)
@@ -1085,6 +1149,16 @@ local function LoadMain()
             tradeGuiAncestryConnection = nil
         end
 
+        if tradeGuiDescendantAddedConnection then
+            pcall(function() tradeGuiDescendantAddedConnection:Disconnect() end)
+            tradeGuiDescendantAddedConnection = nil
+        end
+
+        for _, connection in ipairs(tradeActionConnections) do
+            pcall(function() connection:Disconnect() end)
+        end
+        table.clear(tradeActionConnections)
+
         for _, connection in ipairs(tradeGuiAncestorConnections) do
             pcall(function() connection:Disconnect() end)
         end
@@ -1100,9 +1174,23 @@ local function LoadMain()
         end
 
         setTradeUiActive(
-            guiIsEffectivelyVisible(cachedTradeGui),
+            tradeGuiIsActuallyActive(cachedTradeGui),
             "UI: " .. tostring(cachedTradeGui:GetFullName())
         )
+    end
+
+    local function watchTradeActionObject(obj)
+        if not obj or not obj:IsA("GuiObject") or not getTradeActionKind(obj) then
+            return
+        end
+
+        local ok, connection = pcall(function()
+            return obj:GetPropertyChangedSignal("Visible"):Connect(updateCachedTradeState)
+        end)
+        if ok and connection then
+            table.insert(tradeActionConnections, connection)
+            trackConnection(connection)
+        end
     end
 
     local function bindTradeGui(candidate)
@@ -1123,6 +1211,19 @@ local function LoadMain()
             tradeGuiPropertyConnection = propertyConnection
             trackConnection(propertyConnection)
         end
+
+        -- Watch the actual trade action controls too. The outer trade container
+        -- may stay visible forever while only its buttons are shown/hidden.
+        for _, descendant in ipairs(candidate:GetDescendants()) do
+            watchTradeActionObject(descendant)
+        end
+
+        tradeGuiDescendantAddedConnection = candidate.DescendantAdded:Connect(function(obj)
+            if not runtimeAlive then return end
+            watchTradeActionObject(obj)
+            task.defer(updateCachedTradeState)
+        end)
+        trackConnection(tradeGuiDescendantAddedConnection)
 
         -- Also watch parent GUI visibility. Adopt Me often hides a parent frame
         -- while leaving the inner trade frame itself Visible=true.
@@ -1325,7 +1426,8 @@ local function LoadMain()
     MainTab:CreateLabel("Auto Farm: load player > saved position > list house > door > message.")
     autoFarmToggle = MainTab:CreateToggle({
         Name = "Auto Farm (Door + Chat)",
-        CurrentValue = false,
+        CurrentValue = settings.AutoFarm,
+        Flag = "AutoFarm",
         Callback = function(value)
             if value then
                 startFarm()
@@ -1551,9 +1653,10 @@ local function LoadMain()
     MainTab:CreateSection("🌍 Server Hop")
     MainTab:CreateLabel("Auto Hop requests a Trading Hub teleport after each Hop Delay.")
 
-    MainTab:CreateToggle({
+    local autoServerHopToggle = MainTab:CreateToggle({
         Name = "Auto Server Hop",
-        CurrentValue = false,
+        CurrentValue = settings.AutoServerHop,
+        Flag = "AutoServerHop",
         Callback = function(value)
             if value then
                 startServerHop()
@@ -1816,6 +1919,8 @@ local function LoadMain()
         settings.AutoFarm = false
         settings.AutoServerHop = false
         settings.NoTradeHop = false
+        state.farmLoopActive = false
+        state.hopLoopActive = false
 
         state.farmSession += 1
         state.hopSession += 1
@@ -1839,6 +1944,37 @@ local function LoadMain()
     end
 
     GLOBAL_ENV.__MagicDoorShutdown = shutdownMagicDoor
+
+    --// RESUME SAVED AUTOMATION AFTER A HOP / RE-EXECUTION
+    -- The JSON config remembers whether Auto Farm and Auto Server Hop were ON.
+    -- Rayfield Flags remember the visual toggle state. This fallback explicitly
+    -- starts the loops in case this Rayfield build restores a toggle without
+    -- invoking its callback.
+    local resumeAutoFarm = settings.AutoFarm == true
+    local resumeAutoServerHop = settings.AutoServerHop == true
+
+    task.defer(function()
+        task.wait(0.5)
+        if not runtimeAlive then return end
+
+        if resumeAutoFarm and not state.farmLoopActive then
+            startFarm()
+            if autoFarmToggle then
+                pcall(function()
+                    autoFarmToggle:Set(true)
+                end)
+            end
+        end
+
+        if resumeAutoServerHop and not state.hopLoopActive then
+            startServerHop()
+            if autoServerHopToggle then
+                pcall(function()
+                    autoServerHopToggle:Set(true)
+                end)
+            end
+        end
+    end)
 
     -- Optional join teleport never starts a separate door/chat loop.
     -- Starting/stopping Auto Farm invalidates this task so it cannot move you later.
