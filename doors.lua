@@ -129,6 +129,8 @@ local function LoadMain()
         teleporting = false,
         teleportRequest = 0,
         chatSentThisServer = false,
+        preparedJobId = nil,
+        houseListed = false,
         sessionStartedAt = os.clock(),
         stats = {
             DoorsPlaced = 0,
@@ -325,7 +327,28 @@ local function LoadMain()
         if result == false then return false, "The server rejected the house listing." end
         -- A nil return confirms request completion, not the replicated listing state.
         if not waitWhileActive(0.5, isActive) then return false, "cancelled" end
+        state.houseListed = true
+        state.preparedJobId = game.JobId
         return true
+    end
+
+    local function isAtSavedPosition()
+        local saved = tableToCFrame(settings.SavedCFrame)
+        local character = player.Character
+        local root = character and character:FindFirstChild("HumanoidRootPart")
+        local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+
+        if not saved or not root or not humanoid or humanoid.Health <= 0 then
+            return false
+        end
+
+        return (root.Position - saved.Position).Magnitude <= 6
+    end
+
+    local function setupAlreadyPrepared()
+        return state.preparedJobId == game.JobId
+            and state.houseListed
+            and isAtSavedPosition()
     end
 
     --// CHAT
@@ -547,63 +570,127 @@ local function LoadMain()
         local mySession = state.farmSession
         settings.AutoFarm = true
         saveConfig()
+
         local function isActive()
             return settings.AutoFarm and state.farmSession == mySession and not state.teleporting
         end
+
         local function abort(reason)
             if state.farmSession ~= mySession then return end
             stopFarm()
-            if autoFarmToggle then pcall(function() autoFarmToggle:Set(false) end) end
-            if reason ~= "cancelled" then notify("Auto Farm stopped", tostring(reason), 5) end
+            if autoFarmToggle then
+                pcall(function()
+                    autoFarmToggle:Set(false)
+                end)
+            end
+            if reason ~= "cancelled" then
+                notify("Auto Farm stopped", tostring(reason), 5)
+            end
         end
 
         task.spawn(function()
             local runOk, runError = pcall(function()
-                notify("Auto Farm", "Waiting for your player and house data to load...", 3)
-                local ready, readyReason = waitForPlayerReady(isActive)
-                if not ready then abort(readyReason); return end
+                notify("Auto Farm", "Waiting for your player and house data to load...", 2)
 
-                notify("Auto Farm", "Teleporting to your saved position...", 2)
-                local moved, preparedCharacter = teleportToSavedPosition(false, isActive)
-                if not moved then abort(preparedCharacter); return end
-                local function characterIsActive()
-                    local humanoid = preparedCharacter:FindFirstChildOfClass("Humanoid")
-                    return isActive() and player.Character == preparedCharacter
-                        and preparedCharacter.Parent ~= nil and humanoid ~= nil and humanoid.Health > 0
+                local ready, readyReason = waitForPlayerReady(isActive)
+                if not ready then
+                    abort(readyReason)
+                    return
                 end
 
-                notify("Auto Farm", "Listing your house for trade...", 2)
-                local listed, listReason = listHouseForTrade(characterIsActive)
-                if not listed then abort(listReason); return end
+                -- Do the expensive setup only once per server while the saved
+                -- position/listed-house state is still valid.
+                if setupAlreadyPrepared() then
+                    notify("Auto Farm", "Setup already ready. Resuming farm/chat.", 2)
+                else
+                    notify("Auto Farm", "Teleporting to your saved position...", 2)
+                    local moved, preparedCharacter = teleportToSavedPosition(false, isActive)
+                    if not moved then
+                        abort(preparedCharacter)
+                        return
+                    end
+
+                    local humanoid = preparedCharacter:FindFirstChildOfClass("Humanoid")
+                    if not humanoid or humanoid.Health <= 0 then
+                        abort("Character is not ready.")
+                        return
+                    end
+
+                    notify("Auto Farm", "Listing your house for trade...", 2)
+                    local listed, listReason = listHouseForTrade(isActive)
+                    if not listed then
+                        abort(listReason)
+                        return
+                    end
+
+                    state.preparedJobId = game.JobId
+                    state.houseListed = true
+                end
+
+                local preparedCharacter = player.Character
+                if not preparedCharacter then
+                    abort("Character is missing.")
+                    return
+                end
+
+                local function characterIsActive()
+                    local humanoid = preparedCharacter:FindFirstChildOfClass("Humanoid")
+                    return isActive()
+                        and player.Character == preparedCharacter
+                        and preparedCharacter.Parent ~= nil
+                        and humanoid ~= nil
+                        and humanoid.Health > 0
+                end
 
                 local independentChatStarted = false
+
                 while characterIsActive() do
                     local placed = autoPlaceMagicDoor(false, characterIsActive)
                     if not characterIsActive() then break end
+
                     if placed then
                         maybeSendChatAfterPlacement(characterIsActive)
+
                         if not independentChatStarted then
                             independentChatStarted = true
-                            -- Even Independent mode waits for the first successful door.
                             task.spawn(function()
                                 while characterIsActive() do
-                                    if settings.ChatMode == "Independent" and settings.ChatMessage ~= "" then
+                                    if settings.ChatMode == "Independent"
+                                        and settings.ChatMessage ~= "" then
                                         sendMessage(settings.ChatMessage, characterIsActive)
                                     end
-                                    if not waitWhileActive(math.max(1, settings.ChatDelay), characterIsActive) then break end
+
+                                    if not waitWhileActive(
+                                        math.max(1, settings.ChatDelay),
+                                        characterIsActive
+                                    ) then
+                                        break
+                                    end
                                 end
                             end)
                         end
                     end
-                    if not waitWhileActive(math.max(1, settings.PlaceDelay), characterIsActive) then break end
+
+                    if not waitWhileActive(
+                        math.max(1, settings.PlaceDelay),
+                        characterIsActive
+                    ) then
+                        break
+                    end
                 end
+
                 if isActive() then
-                    abort("Character respawned. Turn Auto Farm on again to repeat the setup.")
+                    state.houseListed = false
+                    state.preparedJobId = nil
+                    abort("Character respawned. Turn Auto Farm on again after spawning.")
                 else
                     abort("cancelled")
                 end
             end)
-            if not runOk then abort(runError) end
+
+            if not runOk then
+                abort(runError)
+            end
         end)
     end
 
@@ -898,6 +985,10 @@ local function LoadMain()
                 Router.get("HousingAPI/UnlistHouse"):InvokeServer()
             end)
 
+            if ok then
+                state.houseListed = false
+                state.preparedJobId = nil
+            end
             notify("House", ok and "House unlisted." or "Failed to unlist house.", 2)
         end,
     })
