@@ -933,7 +933,7 @@ local function loadMain()
 		end
 
 		autoPasteSource = config.source == "filequeue" and "filequeue" or "loaded"
-		autoPasteSingleFile = config.singleFileMode == true
+		autoPasteSingleFile = config.singleFileMode == false
 		autoPasteMode = config.pasteMode == "slow" and "slow" or "fast"
 		kaliremAP.enabled = false
 		autoPasteQueueCopies = math.clamp(math.floor(tonumber(config.queueCopies) or 1), 1, 50)
