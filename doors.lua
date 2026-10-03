@@ -2,10 +2,16 @@
 -- Re-executing this updated script shuts down the previous UPDATED instance first.
 local GLOBAL_ENV = (getgenv and getgenv()) or _G
 
+-- Stop the previous updated Magic Door instance before starting this one.
 if type(GLOBAL_ENV.__MagicDoorShutdown) == "function" then
     pcall(GLOBAL_ENV.__MagicDoorShutdown)
     GLOBAL_ENV.__MagicDoorShutdown = nil
 end
+
+-- Generation token: every new execution invalidates older updated instances,
+-- even if the previous one is still finishing initialization.
+GLOBAL_ENV.__MagicDoorGeneration = (tonumber(GLOBAL_ENV.__MagicDoorGeneration) or 0) + 1
+local MAGIC_DOOR_GENERATION = GLOBAL_ENV.__MagicDoorGeneration
 
 -- Auto Farm order: load player/data -> saved position -> list house -> door -> chat.
 local function LoadMain()
@@ -24,6 +30,22 @@ local function LoadMain()
         end
         return connection
     end
+
+    -- Register an EARLY shutdown immediately. This closes the first updated
+    -- instance even if you execute this script again before initialization ends.
+    local function earlyShutdown()
+        if not runtimeAlive then return end
+        runtimeAlive = false
+
+        for _, connection in ipairs(trackedConnections) do
+            pcall(function() connection:Disconnect() end)
+        end
+        table.clear(trackedConnections)
+
+        pcall(function() Rayfield:Destroy() end)
+    end
+
+    GLOBAL_ENV.__MagicDoorShutdown = earlyShutdown
 
     --// SERVICES
     local HttpService = game:GetService("HttpService")
@@ -137,10 +159,8 @@ local function LoadMain()
         end
     end
 
-    -- Auto Farm and Auto Server Hop are allowed to resume from the saved config.
-    -- This is important after a Trading Hub/server hop when the script auto-executes again.
-    -- NoTradeHop continues to be restored by its Rayfield toggle/Flag.
-    settings.NoTradeHop = false
+    -- Automation states are restored from MagicDoorSettings.json after a hop/rejoin.
+    -- Do not force them OFF here, otherwise the saved ON state is lost on startup.
 
     --// RUNTIME STATE
     local state = {
@@ -149,6 +169,7 @@ local function LoadMain()
         noTradeHopSession = 0,
         farmLoopActive = false,
         hopLoopActive = false,
+        noTradeHopLoopActive = false,
         placing = false,
         sendingChat = false,
         teleporting = false,
@@ -247,6 +268,10 @@ local function LoadMain()
     end
 
     local function canRun(isActive)
+        -- A newer execution automatically invalidates all loops from this run.
+        if not runtimeAlive or GLOBAL_ENV.__MagicDoorGeneration ~= MAGIC_DOOR_GENERATION then
+            return false
+        end
         return not isActive or isActive()
     end
 
@@ -349,18 +374,41 @@ local function LoadMain()
 
     local function listHouseForTrade(isActive)
         if not canRun(isActive) then return false, "cancelled" end
+
         local ok, result = pcall(function()
-            -- Reuse the existing zero-argument remote; the server decides whether listing is allowed.
             return Router.get("HousingAPI/ListHouse"):InvokeServer()
         end)
+
         if not canRun(isActive) then return false, "cancelled" end
-        if not ok then return false, "House listing request failed: " .. tostring(result) end
-        if result == false then return false, "The server rejected the house listing." end
-        -- A nil return confirms request completion, not the replicated listing state.
+
+        -- If the house was already listed before this script started, Adopt Me can
+        -- reject/return false for a second ListHouse request. That must NOT stop
+        -- Auto Door + Auto Message. Treat an already-listed response as prepared.
+        if not ok then
+            local message = string.lower(tostring(result or ""))
+            if message:find("already", 1, true) or message:find("listed", 1, true) then
+                state.houseListed = true
+                state.preparedJobId = game.JobId
+                debugPrint("House appears to already be listed; continuing Auto Farm.")
+                return true, "already_listed"
+            end
+            return false, "House listing request failed: " .. tostring(result)
+        end
+
+        if result == false then
+            -- A false response is commonly returned when this same house is already
+            -- listed. Continue instead of aborting the door/message loop.
+            state.houseListed = true
+            state.preparedJobId = game.JobId
+            debugPrint("ListHouse returned false; assuming existing listing and continuing.")
+            return true, "already_listed_or_existing"
+        end
+
+        -- A nil/true return confirms request completion.
         if not waitWhileActive(0.5, isActive) then return false, "cancelled" end
         state.houseListed = true
         state.preparedJobId = game.JobId
-        return true
+        return true, "listed"
     end
 
     local function isAtSavedPosition()
@@ -549,7 +597,7 @@ local function LoadMain()
         if not canRun(isActive) then return false, "cancelled" end
         if player.Character ~= character or not root.Parent then return false, "character_changed" end
         local placeCFrame = root.CFrame
-            * CFrame.new(0, -4, -math.max(2, settings.PlacementDistance))
+            * CFrame.new(0, -3, -math.max(2, settings.PlacementDistance))
             * CFrame.Angles(0, math.rad(180), 0)
 
         local remote
@@ -739,6 +787,18 @@ local function LoadMain()
 
         local function abort(reason)
             if state.farmSession ~= mySession then return end
+
+            -- A server/trading-hub teleport temporarily makes isActive() false.
+            -- Preserve the user's saved Auto Farm = ON state so it can resume
+            -- automatically after the new server loads.
+            if reason == "cancelled" and state.teleporting then
+                state.farmLoopActive = false
+                state.farmSession += 1
+                state.activeDoorInstance = nil
+                state.activeDoorPlacedAt = nil
+                return
+            end
+
             stopFarm()
             if autoFarmToggle then
                 pcall(function()
@@ -951,18 +1011,22 @@ local function LoadMain()
 
     local function stopNoTradeHop()
         settings.NoTradeHop = false
+        state.noTradeHopLoopActive = false
         state.noTradeHopSession += 1
         saveConfig()
     end
 
     local function startNoTradeHop()
-        if settings.NoTradeHop then
+        if state.noTradeHopLoopActive then
+            settings.NoTradeHop = true
+            saveConfig()
             return
         end
 
         state.noTradeHopSession += 1
         local mySession = state.noTradeHopSession
         settings.NoTradeHop = true
+        state.noTradeHopLoopActive = true
         resetNoTradeTimer("toggle enabled")
         saveConfig()
 
@@ -1011,6 +1075,10 @@ local function LoadMain()
 
                 task.wait(1)
             end
+
+            if state.noTradeHopSession == mySession then
+                state.noTradeHopLoopActive = false
+            end
         end)
     end
 
@@ -1029,6 +1097,9 @@ local function LoadMain()
     local tradeGuiDescendantAddedConnection = nil
     local tradeGuiAncestorConnections = {}
     local tradeActionConnections = {}
+    local tradeActionObjects = {}
+    local tradeUpdateScheduled = false
+    local TRADE_UI_DEBOUNCE = 0.12
 
     -- A child trade frame can remain Visible=true while one of its parents is
     -- hidden. Check the complete GUI ancestry so we don't leave inTrade stuck.
@@ -1093,12 +1164,28 @@ local function LoadMain()
             return 0
         end
 
+        -- Do NOT rescan the whole trade GUI here. The action controls are cached
+        -- once when the trade container is bound and as new controls are added.
         local kinds = {}
-        for _, descendant in ipairs(container:GetDescendants()) do
-            local kind = getTradeActionKind(descendant)
-            if kind and descendant:IsA("GuiObject") and guiIsEffectivelyVisible(descendant) then
-                kinds[kind] = true
+        local writeIndex = 1
+
+        for readIndex = 1, #tradeActionObjects do
+            local entry = tradeActionObjects[readIndex]
+            local obj = entry and entry.object
+            local kind = entry and entry.kind
+
+            if obj and obj.Parent and obj:IsDescendantOf(container) then
+                tradeActionObjects[writeIndex] = entry
+                writeIndex += 1
+
+                if kind and guiIsEffectivelyVisible(obj) then
+                    kinds[kind] = true
+                end
             end
+        end
+
+        for index = #tradeActionObjects, writeIndex, -1 do
+            tradeActionObjects[index] = nil
         end
 
         local count = 0
@@ -1158,6 +1245,8 @@ local function LoadMain()
             pcall(function() connection:Disconnect() end)
         end
         table.clear(tradeActionConnections)
+        table.clear(tradeActionObjects)
+        tradeUpdateScheduled = false
 
         for _, connection in ipairs(tradeGuiAncestorConnections) do
             pcall(function() connection:Disconnect() end)
@@ -1179,13 +1268,46 @@ local function LoadMain()
         )
     end
 
-    local function watchTradeActionObject(obj)
-        if not obj or not obj:IsA("GuiObject") or not getTradeActionKind(obj) then
+    -- Adopt Me can flip many trade UI objects in the same frame when a request
+    -- arrives. Coalesce all those changes into one state check instead of doing
+    -- a full check for every individual Visible change.
+    local function scheduleTradeStateUpdate()
+        if not runtimeAlive or tradeUpdateScheduled then
             return
         end
 
+        tradeUpdateScheduled = true
+        task.delay(TRADE_UI_DEBOUNCE, function()
+            tradeUpdateScheduled = false
+            if runtimeAlive then
+                updateCachedTradeState()
+            end
+        end)
+    end
+
+    local function watchTradeActionObject(obj)
+        if not obj or not obj:IsA("GuiObject") then
+            return
+        end
+
+        local kind = getTradeActionKind(obj)
+        if not kind then
+            return
+        end
+
+        for _, entry in ipairs(tradeActionObjects) do
+            if entry.object == obj then
+                return
+            end
+        end
+
+        table.insert(tradeActionObjects, {
+            object = obj,
+            kind = kind,
+        })
+
         local ok, connection = pcall(function()
-            return obj:GetPropertyChangedSignal("Visible"):Connect(updateCachedTradeState)
+            return obj:GetPropertyChangedSignal("Visible"):Connect(scheduleTradeStateUpdate)
         end)
         if ok and connection then
             table.insert(tradeActionConnections, connection)
@@ -1204,7 +1326,7 @@ local function LoadMain()
         local propertyName = candidate:IsA("ScreenGui") and "Enabled" or "Visible"
 
         local ok, propertyConnection = pcall(function()
-            return candidate:GetPropertyChangedSignal(propertyName):Connect(updateCachedTradeState)
+            return candidate:GetPropertyChangedSignal(propertyName):Connect(scheduleTradeStateUpdate)
         end)
 
         if ok and propertyConnection then
@@ -1221,7 +1343,7 @@ local function LoadMain()
         tradeGuiDescendantAddedConnection = candidate.DescendantAdded:Connect(function(obj)
             if not runtimeAlive then return end
             watchTradeActionObject(obj)
-            task.defer(updateCachedTradeState)
+            scheduleTradeStateUpdate()
         end)
         trackConnection(tradeGuiDescendantAddedConnection)
 
@@ -1240,7 +1362,7 @@ local function LoadMain()
                 local watchObject = ancestor
                 local watchProperty = ancestorProperty
                 local watchOk, connection = pcall(function()
-                    return watchObject:GetPropertyChangedSignal(watchProperty):Connect(updateCachedTradeState)
+                    return watchObject:GetPropertyChangedSignal(watchProperty):Connect(scheduleTradeStateUpdate)
                 end)
                 if watchOk and connection then
                     table.insert(tradeGuiAncestorConnections, connection)
@@ -1401,7 +1523,7 @@ local function LoadMain()
 
     noTradeHopToggle = MainTab:CreateToggle({
         Name = "Hop If No Trade For 5 Minutes",
-        CurrentValue = false,
+        CurrentValue = settings.NoTradeHop,
         Flag = "HopIfNoTrade5Min",
         Callback = function(value)
             if value then
@@ -1915,12 +2037,11 @@ local function LoadMain()
 
         runtimeAlive = false
 
-        -- Stop all automation loops owned by this instance.
-        settings.AutoFarm = false
-        settings.AutoServerHop = false
-        settings.NoTradeHop = false
+        -- Stop runtime loops owned by this instance without changing the
+        -- user's saved ON/OFF preferences. The next server should resume them.
         state.farmLoopActive = false
         state.hopLoopActive = false
+        state.noTradeHopLoopActive = false
 
         state.farmSession += 1
         state.hopSession += 1
@@ -1943,15 +2064,16 @@ local function LoadMain()
         end
     end
 
+    -- Replace the early shutdown with the complete shutdown now that all state exists.
     GLOBAL_ENV.__MagicDoorShutdown = shutdownMagicDoor
 
     --// RESUME SAVED AUTOMATION AFTER A HOP / RE-EXECUTION
-    -- The JSON config remembers whether Auto Farm and Auto Server Hop were ON.
-    -- Rayfield Flags remember the visual toggle state. This fallback explicitly
-    -- starts the loops in case this Rayfield build restores a toggle without
-    -- invoking its callback.
+    -- MagicDoorSettings.json is the authoritative source for these automation
+    -- states. Rayfield Flags still save the UI state, but we explicitly resume
+    -- the loops so executor/Rayfield load timing cannot leave them OFF.
     local resumeAutoFarm = settings.AutoFarm == true
     local resumeAutoServerHop = settings.AutoServerHop == true
+    local resumeNoTradeHop = settings.NoTradeHop == true
 
     task.defer(function()
         task.wait(0.5)
@@ -1960,18 +2082,21 @@ local function LoadMain()
         if resumeAutoFarm and not state.farmLoopActive then
             startFarm()
             if autoFarmToggle then
-                pcall(function()
-                    autoFarmToggle:Set(true)
-                end)
+                pcall(function() autoFarmToggle:Set(true) end)
             end
         end
 
         if resumeAutoServerHop and not state.hopLoopActive then
             startServerHop()
             if autoServerHopToggle then
-                pcall(function()
-                    autoServerHopToggle:Set(true)
-                end)
+                pcall(function() autoServerHopToggle:Set(true) end)
+            end
+        end
+
+        if resumeNoTradeHop and not state.noTradeHopLoopActive then
+            startNoTradeHop()
+            if noTradeHopToggle then
+                pcall(function() noTradeHopToggle:Set(true) end)
             end
         end
     end)
