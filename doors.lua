@@ -742,13 +742,67 @@ local function LoadMain()
     end
 
     --// CHAT MODE HELPER
+    -- After Every Door: send immediately after a successful door placement, then
+    -- keep sending every ChatDelay seconds while THAT exact door still exists.
+    -- The loop ends as soon as the door disappears, so the next placed door gets
+    -- its own fresh chat loop.
+    local doorChatSession = 0
+
+    local function startAfterEveryDoorChat(door, isActive)
+        doorChatSession += 1
+        local myDoorChatSession = doorChatSession
+
+        if not canRun(isActive) or settings.ChatMessage == "" then
+            return
+        end
+
+        task.spawn(function()
+            while canRun(isActive)
+                and myDoorChatSession == doorChatSession
+                and settings.ChatMode == "After Every Door"
+                and settings.ChatMessage ~= "" do
+
+                -- If the exact placed door was detected, stop the moment it is gone.
+                if door and not doorStillExists(door) then
+                    break
+                end
+
+                sendMessage(settings.ChatMessage, isActive)
+
+                local delayLeft = math.max(1, settings.ChatDelay)
+                while delayLeft > 0 do
+                    if not canRun(isActive)
+                        or myDoorChatSession ~= doorChatSession
+                        or settings.ChatMode ~= "After Every Door"
+                        or settings.ChatMessage == "" then
+                        return
+                    end
+
+                    if door and not doorStillExists(door) then
+                        return
+                    end
+
+                    local step = math.min(0.2, delayLeft)
+                    task.wait(step)
+                    delayLeft -= step
+                end
+
+                -- If the door instance could not be resolved, only send once for
+                -- that placement rather than creating an endless chat loop.
+                if not door then
+                    break
+                end
+            end
+        end)
+    end
+
     local function maybeSendChatAfterPlacement(isActive)
         if not canRun(isActive) or settings.ChatMessage == "" then
             return
         end
 
         if settings.ChatMode == "After Every Door" then
-            sendMessage(settings.ChatMessage, isActive)
+            startAfterEveryDoorChat(state.activeDoorInstance, isActive)
         elseif settings.ChatMode == "Once Per Server" and not state.chatSentThisServer then
             local ok = sendMessage(settings.ChatMessage, isActive)
             if ok then
@@ -763,6 +817,7 @@ local function LoadMain()
         settings.AutoFarm = false
         state.farmLoopActive = false
         state.farmSession += 1
+        doorChatSession += 1
         state.activeDoorInstance = nil
         state.activeDoorPlacedAt = nil
         saveConfig()
@@ -794,6 +849,7 @@ local function LoadMain()
             if reason == "cancelled" and state.teleporting then
                 state.farmLoopActive = false
                 state.farmSession += 1
+                doorChatSession += 1
                 state.activeDoorInstance = nil
                 state.activeDoorPlacedAt = nil
                 return
@@ -2044,6 +2100,7 @@ local function LoadMain()
         state.noTradeHopLoopActive = false
 
         state.farmSession += 1
+        doorChatSession += 1
         state.hopSession += 1
         state.noTradeHopSession += 1
         state.teleportRequest += 1
