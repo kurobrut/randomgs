@@ -397,11 +397,8 @@ local function loadMain()
 		toggle = nil,
 		changing = false,
 		autoSelected = {},
-		completed = {},
 	}
 	-- Every successfully pasted target house is remembered by house_id.
-	-- This prevents completed houses from being selected/pasted again on later runs.
-	local completedAutoPasteHouseIds = {}
 	local fileQueue = {}
 	local fqAllFiles = {}
 	local fqSearchQuery = ""
@@ -936,17 +933,6 @@ local function loadMain()
 			end
 		end
 
-		local completedKaliremHouseIds = {}
-		for houseId in pairs(kaliremAP.completed) do
-			table.insert(completedKaliremHouseIds, tostring(houseId))
-		end
-		table.sort(completedKaliremHouseIds)
-
-		local completedTargetHouseIds = {}
-		for houseId in pairs(completedAutoPasteHouseIds) do
-			table.insert(completedTargetHouseIds, tostring(houseId))
-		end
-		table.sort(completedTargetHouseIds)
 
 		local config = {
 			version = 3,
@@ -956,8 +942,6 @@ local function loadMain()
 			queueCopies = autoPasteQueueCopies,
 			pastebinValue = autoPastePastebinValue,
 			targetHouseIds = targetIds,
-			completedKaliremHouseIds = completedKaliremHouseIds,
-			completedTargetHouseIds = completedTargetHouseIds,
 			queue = serializeAutoPasteValue(fileQueue),
 			autoAcceptPlayer = selectedPlayer,
 			autoAcceptEnabled = autoTradeEnabled,
@@ -1017,33 +1001,6 @@ local function loadMain()
 			pendingAutoPasteTargetIds[tostring(savedId)] = true
 		end
 		restorePendingAutoPasteTargets(false)
-
-		-- Restore every target house that successfully finished before.
-		-- Older configs may only contain completed Kalirem IDs, so merge those too.
-		table.clear(completedAutoPasteHouseIds)
-		for _, savedId in ipairs(config.completedTargetHouseIds or {}) do
-			completedAutoPasteHouseIds[tostring(savedId)] = true
-		end
-
-		-- Keep the existing Kalirem completion history for backwards compatibility.
-		table.clear(kaliremAP.completed)
-		for _, savedId in ipairs(config.completedKaliremHouseIds or {}) do
-			local key = tostring(savedId)
-			kaliremAP.completed[key] = true
-			completedAutoPasteHouseIds[key] = true
-		end
-
-		-- Never restore any already-completed house as a target.
-		for houseId in pairs(autoPasteSelections) do
-			if completedAutoPasteHouseIds[tostring(houseId)] then
-				autoPasteSelections[houseId] = nil
-			end
-		end
-		for savedId in pairs(pendingAutoPasteTargetIds) do
-			if completedAutoPasteHouseIds[tostring(savedId)] then
-				pendingAutoPasteTargetIds[savedId] = nil
-			end
-		end
 
 		local missingTargets = 0
 		for _ in pairs(pendingAutoPasteTargetIds) do
@@ -1375,10 +1332,7 @@ local function loadMain()
 				local key = tostring(houseId)
 				liveIds[key] = true
 				local houseName = tostring(house.name or "")
-				if string.lower(houseName):match("^%s*kalirem")
-					and not kaliremAP.completed[key]
-					and not completedAutoPasteHouseIds[key]
-				then
+				if string.lower(houseName):match("^%s*kalirem") then
 					available += 1
 					local label = ownedHouseLabelById[houseId]
 						or (houseName ~= "" and houseName)
@@ -1470,7 +1424,7 @@ local function loadMain()
 			table.clear(pendingAutoPasteTargetIds)
 			for _, name in ipairs(opts or {}) do
 				local id = ownedHouseMap[name]
-				if id and not completedAutoPasteHouseIds[tostring(id)] then
+				if id then
 					autoPasteSelections[id] = name
 				end
 			end
@@ -1502,10 +1456,7 @@ local function loadMain()
 					local key = tostring(house.house_id)
 					liveIds[key] = true
 
-					if string.lower(tostring(house.name or "")):match("^%s*kalirem")
-						and not kaliremAP.completed[key]
-						and not completedAutoPasteHouseIds[key]
-					then
+					if string.lower(tostring(house.name or "")):match("^%s*kalirem") then
 						available += 1
 					end
 				end
@@ -1872,17 +1823,6 @@ local function loadMain()
 			exitCurrentHouse()
 			return false
 		end
-
-		-- The paste already succeeded at this point. Mark this exact target house
-		-- completed BEFORE leaving, so it can never be selected/pasted again.
-		local completedKey = tostring(houseId)
-		completedAutoPasteHouseIds[completedKey] = true
-
-		if string.lower(tostring(houseName or "")):match("^%s*kalirem") then
-			kaliremAP.completed[completedKey] = true
-			kaliremAP.autoSelected[completedKey] = nil
-		end
-
 		deselectAutoPasteTarget(houseId)
 		autoSaveAutoPasteConfig()
 
@@ -1904,7 +1844,7 @@ local function loadMain()
 
 		for id in pairs(autoPasteSelections) do
 			local key = tostring(id)
-			if not completedAutoPasteHouseIds[key] and not seen[key] then
+			if not seen[key] then
 				seen[key] = true
 				table.insert(ids, id)
 			end
@@ -1919,10 +1859,7 @@ local function loadMain()
 			for _, house in pairs(manager) do
 				if type(house) == "table" and house.house_id ~= nil and kaliremAP.isName(house.name) then
 					local key = tostring(house.house_id)
-					if not kaliremAP.completed[key]
-						and not completedAutoPasteHouseIds[key]
-						and not seen[key]
-					then
+					if not seen[key] then
 						seen[key] = true
 						autoPasteSelections[house.house_id] = tostring(house.name or ("Kalirem [" .. key .. "]"))
 						table.insert(ids, house.house_id)
