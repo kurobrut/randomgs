@@ -364,9 +364,7 @@ local function loadMain()
 					if label then table.insert(selectedLabels, label) end
 				end
 				table.sort(selectedLabels)
-				if #selectedLabels > 0 then
-					autoPasteDropdown:Set(selectedLabels)
-				end
+				autoPasteDropdown:Set(selectedLabels)
 			end)
 			autoPasteApplyingSavedTargets = false
 		end
@@ -401,7 +399,9 @@ local function loadMain()
 		autoSelected = {},
 		completed = {},
 	}
-	local autoPasteSingleFile = false
+	-- Every successfully pasted target house is remembered by house_id.
+	-- This prevents completed houses from being selected/pasted again on later runs.
+	local completedAutoPasteHouseIds = {}
 	local fileQueue = {}
 	local fqAllFiles = {}
 	local fqSearchQuery = ""
@@ -416,6 +416,7 @@ local function loadMain()
 	local autoPasteSourceDropdown
 	local autoPasteConfigReady = false
 	local autoPasteSaveState = { pending = false, dirty = false, lastError = nil }
+	local saveAutoPasteConfig
 
 	local houseFSPath = "HouseFS"
 	local houseSettingsPath = houseFSPath .. "/settings"
@@ -762,6 +763,66 @@ local function loadMain()
 		pcall(function() fqQueueListLabel:Set("Queue:\n" .. table.concat(lines, "\n")) end)
 	end
 
+	local function removeCompletedQueueEntry(entry, expectedIndex)
+		if not entry then return false end
+
+		local removeIndex = nil
+
+		-- Fast/most reliable path: remove the exact slot the queue loop is processing.
+		if expectedIndex and fileQueue[expectedIndex] == entry then
+			removeIndex = expectedIndex
+		end
+
+		-- Exact table identity fallback.
+		if not removeIndex then
+			for i, queuedEntry in ipairs(fileQueue) do
+				if queuedEntry == entry then
+					removeIndex = i
+					break
+				end
+			end
+		end
+
+		-- Last fallback for a queue object recreated by config loading.
+		if not removeIndex then
+			for i, queuedEntry in ipairs(fileQueue) do
+				if tostring(queuedEntry.filename or "") == tostring(entry.filename or "")
+					and tostring(queuedEntry.sourceName or "") == tostring(entry.sourceName or "") then
+					removeIndex = i
+					break
+				end
+			end
+		end
+
+		if not removeIndex then
+			warn("[Auto Paste] Completed queue entry was not found: " .. tostring(entry.filename))
+			return false
+		end
+
+		local removed = table.remove(fileQueue, removeIndex)
+
+		-- Update BOTH queue UIs immediately.
+		rebuildQueueLabel()
+		setAPFileInfo()
+
+		-- Persist synchronously. Because saveAutoPasteConfig is forward-declared,
+		-- this always calls the local save function rather than a nil/global value.
+		if type(saveAutoPasteConfig) == "function" then
+			local ok, saved, err = pcall(saveAutoPasteConfig)
+			if not ok or not saved then
+				warn("[Auto Paste] Could not persist queue removal: " .. tostring(err or saved))
+			end
+		else
+			warn("[Auto Paste] saveAutoPasteConfig is unavailable while removing queue item")
+		end
+
+		print("[Auto Paste] Removed completed queue item #" .. tostring(removeIndex)
+			.. ": " .. tostring(removed and removed.filename or entry.filename)
+			.. " | Remaining: " .. tostring(#fileQueue))
+
+		return true
+	end
+
 	local function getAutoPasteTargetNames()
 		local selectedNames = {}
 		for houseId in pairs(autoPasteSelections) do
@@ -794,11 +855,7 @@ local function loadMain()
 			autoPasteApplyingSavedTargets = true
 			pcall(function()
 				local selected = getAutoPasteTargetNames()
-				if #selected > 0 then
-					autoPasteDropdown:Set(selected)
-				else
-					autoPasteDropdown:Refresh(ownedHouseList, true)
-				end
+				autoPasteDropdown:Set(selected)
 			end)
 			autoPasteApplyingSavedTargets = false
 		end
@@ -852,7 +909,7 @@ local function loadMain()
 		return value
 	end
 
-	local function saveAutoPasteConfig()
+	saveAutoPasteConfig = function()
 		local folderOk, folderErr = pcall(function()
 			if not isfolder(houseFSPath) then makefolder(houseFSPath) end
 			if not isfolder(houseSettingsPath) then makefolder(houseSettingsPath) end
@@ -879,15 +936,28 @@ local function loadMain()
 			end
 		end
 
+		local completedKaliremHouseIds = {}
+		for houseId in pairs(kaliremAP.completed) do
+			table.insert(completedKaliremHouseIds, tostring(houseId))
+		end
+		table.sort(completedKaliremHouseIds)
+
+		local completedTargetHouseIds = {}
+		for houseId in pairs(completedAutoPasteHouseIds) do
+			table.insert(completedTargetHouseIds, tostring(houseId))
+		end
+		table.sort(completedTargetHouseIds)
+
 		local config = {
-			version = 1,
+			version = 3,
 			source = autoPasteSource,
-			singleFileMode = autoPasteSingleFile,
 			pasteMode = autoPasteMode,
 			autoPasteKaliremEnabled = false,
 			queueCopies = autoPasteQueueCopies,
 			pastebinValue = autoPastePastebinValue,
 			targetHouseIds = targetIds,
+			completedKaliremHouseIds = completedKaliremHouseIds,
+			completedTargetHouseIds = completedTargetHouseIds,
 			queue = serializeAutoPasteValue(fileQueue),
 			autoAcceptPlayer = selectedPlayer,
 			autoAcceptEnabled = autoTradeEnabled,
@@ -933,7 +1003,6 @@ local function loadMain()
 		end
 
 		autoPasteSource = config.source == "filequeue" and "filequeue" or "loaded"
-		autoPasteSingleFile = config.singleFileMode == false
 		autoPasteMode = config.pasteMode == "slow" and "slow" or "fast"
 		kaliremAP.enabled = false
 		autoPasteQueueCopies = math.clamp(math.floor(tonumber(config.queueCopies) or 1), 1, 50)
@@ -949,6 +1018,33 @@ local function loadMain()
 		end
 		restorePendingAutoPasteTargets(false)
 
+		-- Restore every target house that successfully finished before.
+		-- Older configs may only contain completed Kalirem IDs, so merge those too.
+		table.clear(completedAutoPasteHouseIds)
+		for _, savedId in ipairs(config.completedTargetHouseIds or {}) do
+			completedAutoPasteHouseIds[tostring(savedId)] = true
+		end
+
+		-- Keep the existing Kalirem completion history for backwards compatibility.
+		table.clear(kaliremAP.completed)
+		for _, savedId in ipairs(config.completedKaliremHouseIds or {}) do
+			local key = tostring(savedId)
+			kaliremAP.completed[key] = true
+			completedAutoPasteHouseIds[key] = true
+		end
+
+		-- Never restore any already-completed house as a target.
+		for houseId in pairs(autoPasteSelections) do
+			if completedAutoPasteHouseIds[tostring(houseId)] then
+				autoPasteSelections[houseId] = nil
+			end
+		end
+		for savedId in pairs(pendingAutoPasteTargetIds) do
+			if completedAutoPasteHouseIds[tostring(savedId)] then
+				pendingAutoPasteTargetIds[savedId] = nil
+			end
+		end
+
 		local missingTargets = 0
 		for _ in pairs(pendingAutoPasteTargetIds) do
 			missingTargets += 1
@@ -960,9 +1056,7 @@ local function loadMain()
 			pcall(function()
 				local selected = getAutoPasteTargetNames()
 				autoPasteDropdown:Refresh(ownedHouseList, true)
-				if #selected > 0 then
-					autoPasteDropdown:Set(selected)
-				end
+				autoPasteDropdown:Set(selected)
 			end)
 			autoPasteApplyingSavedTargets = false
 		end
@@ -1054,16 +1148,6 @@ local function loadMain()
 		Callback = function(opt)
 			local v = (typeof(opt) == "table") and opt[1] or opt
 			setAutoPasteSource(v == "File Queue" and "filequeue" or "loaded")
-			autoSaveAutoPasteConfig()
-		end,
-	})
-
-	AutoPasteTab:CreateToggle({
-		Name = "Single File Mode",
-		CurrentValue = false,
-		Flag = "AutoPasteSingleFileMode",
-		Callback = function(v)
-			autoPasteSingleFile = v
 			autoSaveAutoPasteConfig()
 		end,
 	})
@@ -1268,9 +1352,7 @@ local function loadMain()
 			pcall(function()
 				autoPasteDropdown:Refresh(ownedHouseList, true)
 				local selected = getAutoPasteTargetNames()
-				if #selected > 0 then
-					autoPasteDropdown:Set(selected)
-				end
+				autoPasteDropdown:Set(selected)
 			end)
 			autoPasteApplyingSavedTargets = false
 		end
@@ -1293,7 +1375,10 @@ local function loadMain()
 				local key = tostring(houseId)
 				liveIds[key] = true
 				local houseName = tostring(house.name or "")
-				if string.lower(houseName):match("^%s*kalirem") and not kaliremAP.completed[key] then
+				if string.lower(houseName):match("^%s*kalirem")
+					and not kaliremAP.completed[key]
+					and not completedAutoPasteHouseIds[key]
+				then
 					available += 1
 					local label = ownedHouseLabelById[houseId]
 						or (houseName ~= "" and houseName)
@@ -1308,11 +1393,6 @@ local function loadMain()
 			end
 		end
 
-		for key in pairs(kaliremAP.completed) do
-			if not liveIds[key] then
-				kaliremAP.completed[key] = nil
-			end
-		end
 
 		kaliremAP.refreshDropdown()
 		autoSaveAutoPasteConfig()
@@ -1390,7 +1470,7 @@ local function loadMain()
 			table.clear(pendingAutoPasteTargetIds)
 			for _, name in ipairs(opts or {}) do
 				local id = ownedHouseMap[name]
-				if id then
+				if id and not completedAutoPasteHouseIds[tostring(id)] then
 					autoPasteSelections[id] = name
 				end
 			end
@@ -1424,17 +1504,13 @@ local function loadMain()
 
 					if string.lower(tostring(house.name or "")):match("^%s*kalirem")
 						and not kaliremAP.completed[key]
+						and not completedAutoPasteHouseIds[key]
 					then
 						available += 1
 					end
 				end
 			end
 
-			for key in pairs(kaliremAP.completed) do
-				if not liveIds[key] then
-					kaliremAP.completed[key] = nil
-				end
-			end
 
 			if kaliremAP.enabled then
 				if available > 0 then
@@ -1578,9 +1654,7 @@ local function loadMain()
 			table.sort(selectedNames)
 			pcall(function()
 				autoPasteDropdown:Refresh(ownedHouseList, true)
-				if #selectedNames > 0 then
-					autoPasteDropdown:Set(selectedNames)
-				end
+				autoPasteDropdown:Set(selectedNames)
 			end)
 		end
 		autoSaveAutoPasteConfig()
@@ -1799,15 +1873,24 @@ local function loadMain()
 			return false
 		end
 
-		exitCurrentHouse()
-		task.wait(2)
-		if not checkTargetName() then return false end
+		-- The paste already succeeded at this point. Mark this exact target house
+		-- completed BEFORE leaving, so it can never be selected/pasted again.
+		local completedKey = tostring(houseId)
+		completedAutoPasteHouseIds[completedKey] = true
 
 		if string.lower(tostring(houseName or "")):match("^%s*kalirem") then
-			kaliremAP.completed[tostring(houseId)] = true
-			kaliremAP.autoSelected[tostring(houseId)] = nil
+			kaliremAP.completed[completedKey] = true
+			kaliremAP.autoSelected[completedKey] = nil
 		end
+
 		deselectAutoPasteTarget(houseId)
+		autoSaveAutoPasteConfig()
+
+		exitCurrentHouse()
+		task.wait(2)
+
+		-- Do not re-check the target after exit. The paste was already verified
+		-- successful, and a post-exit live-house check could falsely report failure.
 		return true
 	end
 
@@ -1821,7 +1904,7 @@ local function loadMain()
 
 		for id in pairs(autoPasteSelections) do
 			local key = tostring(id)
-			if not seen[key] then
+			if not completedAutoPasteHouseIds[key] and not seen[key] then
 				seen[key] = true
 				table.insert(ids, id)
 			end
@@ -1836,7 +1919,10 @@ local function loadMain()
 			for _, house in pairs(manager) do
 				if type(house) == "table" and house.house_id ~= nil and kaliremAP.isName(house.name) then
 					local key = tostring(house.house_id)
-					if not kaliremAP.completed[key] and not seen[key] then
+					if not kaliremAP.completed[key]
+						and not completedAutoPasteHouseIds[key]
+						and not seen[key]
+					then
 						seen[key] = true
 						autoPasteSelections[house.house_id] = tostring(house.name or ("Kalirem [" .. key .. "]"))
 						table.insert(ids, house.house_id)
@@ -1923,6 +2009,15 @@ local function loadMain()
 			task.spawn(function()
 				setAPStatus("Running")
 
+				-- Keep queue labels visually synchronized while Auto Paste is active.
+				task.spawn(function()
+					while autoPasteRunning and not stopFlag do
+						setAPFileInfo()
+						task.wait(0.25)
+					end
+					setAPFileInfo()
+				end)
+
 				if autoPasteSource == "loaded" then
 					local total = #candidateIds
 					for i, houseId in ipairs(candidateIds) do
@@ -1940,58 +2035,6 @@ local function loadMain()
 					end
 				elseif autoPasteSource == "filequeue" then
 					local usedHouseIds = {}
-
-					if autoPasteSingleFile then
-						local fileEntry = fileQueue[1]
-						if fileEntry then
-							local fileType = getFileHouseType(fileEntry.houseData)
-							local matchingHouses = {}
-							local completed = true
-
-							for _, houseId in ipairs(candidateIds) do
-								local ownedType = ownedHouseTypeMap[houseId]
-								if (ownedType and isExactSameHouseType(fileType, ownedType))
-									or not ownedType
-									or ownedType == "unknown"
-									or ownedType == "Unknown"
-								then
-									table.insert(matchingHouses, houseId)
-								end
-							end
-
-							if #matchingHouses == 0 then
-								Rayfield:Notify({
-									Title = "Auto Paste",
-									Content = "No matching houses for " .. fileEntry.filename .. " [" .. fileType .. "]",
-									Duration = 5,
-								})
-							else
-								for i, houseId in ipairs(matchingHouses) do
-									if stopFlag or not autoPasteRunning then
-										completed = false
-										break
-									end
-									local houseName = autoPasteSelections[houseId] or tostring(houseId)
-									setAPProg(i .. "/" .. #matchingHouses .. " - " .. fileEntry.filename .. " -> " .. houseName)
-									local pasteResult = pasteIntoHouse(houseId, houseName, fileEntry.houseData, autoPasteMode, fileType)
-									if pasteResult == true then
-										Rayfield:Notify({ Title = "Auto Paste", Content = houseName .. " done", Duration = 2 })
-									else
-										completed = false
-										if stopFlag or not autoPasteRunning then break end
-									end
-									task.wait(1)
-								end
-							end
-
-							if completed and #matchingHouses > 0 then
-								table.remove(fileQueue, 1)
-								rebuildQueueLabel()
-								setAPFileInfo()
-								autoSaveAutoPasteConfig()
-							end
-						end
-					else
 						local totalFiles = #fileQueue
 						local fileIndex = 1
 						local progressIndex = 0
@@ -2020,10 +2063,13 @@ local function loadMain()
 							if pasteResult == true then
 								progressIndex += 1
 								usedHouseIds[matchedId] = true
-								table.remove(fileQueue, fileIndex)
-								rebuildQueueLabel()
-								setAPFileInfo()
-								autoSaveAutoPasteConfig()
+
+								-- Consume the exact queue slot that just finished. Do NOT increment
+								-- fileIndex on success because the next item shifts into this slot.
+								local removedOk = removeCompletedQueueEntry(fileEntry, fileIndex)
+								if not removedOk then
+									warn("[Auto Paste] Paste succeeded but queue removal failed for " .. tostring(fileEntry.filename))
+								end
 								Rayfield:Notify({
 									Title = "Auto Paste",
 									Content = fileEntry.filename .. " -> " .. houseName .. " done",
@@ -2038,12 +2084,14 @@ local function loadMain()
 
 							task.wait(1)
 						end
-					end
 				end
 
 				local wasStopped = stopFlag
 				autoPasteRunning = false
-				autoSaveAutoPasteConfig()
+				-- Final queue sync: completed files stay removed both in the UI and saved config.
+				rebuildQueueLabel()
+				setAPFileInfo()
+				pcall(saveAutoPasteConfig)
 				setAPStatus(wasStopped and "Stopped" or "Idle")
 				setAPProg("-")
 				if not wasStopped then
@@ -2769,9 +2817,22 @@ local function loadMain()
 					end
 
 					if tick() - lastListAttempt >= 4 then
+						-- Re-check immediately before listing so turning Auto Trade OFF
+						-- cannot start another list request from this loop.
+						if not autoTradeStillEnabled() then break end
+
 						lastListAttempt = tick()
 						pcall(function()
+							if not autoTradeStillEnabled() then return end
 							Router.get("HousingAPI/ListHouse"):InvokeServer(entryId)
+
+							-- If the toggle was disabled while InvokeServer was yielding,
+							-- force the house back to an unlisted state.
+							if not autoTradeStillEnabled() then
+								pcall(function()
+									Router.get("HousingAPI/UnlistHouse"):InvokeServer()
+								end)
+							end
 						end)
 					end
 
@@ -2814,9 +2875,25 @@ local function loadMain()
 				processAutoList()
 			else
 
+				-- Invalidate the running loop first. Any old task immediately becomes stale.
 				autoTradeLoopToken += 1
 				autoTradeLoopRunning = false
 				autoTradeWaitingNoticeShown = false
+
+				-- Auto Trade OFF must also leave the currently spawned house unlisted.
+				-- Run it more than once to win a race against an InvokeServer that may
+				-- already have been yielding at the exact moment the toggle was disabled.
+				local offToken = autoTradeLoopToken
+				local function ensureAutoTradeUnlisted()
+					if autoListAfterPaste or autoTradeLoopToken ~= offToken then return end
+					pcall(function()
+						Router.get("HousingAPI/UnlistHouse"):InvokeServer()
+					end)
+				end
+
+				ensureAutoTradeUnlisted()
+				task.delay(0.35, ensureAutoTradeUnlisted)
+				task.delay(1.0, ensureAutoTradeUnlisted)
 			end
 		end,
 	})
