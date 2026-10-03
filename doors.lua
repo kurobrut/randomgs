@@ -1091,10 +1091,104 @@ local function LoadMain()
     --// NO-TRADE 5 MINUTE HOP
     local NO_TRADE_HOP_SECONDS = 5 * 60
     local noTradeHopToggle
+    local noTradeGui
+    local noTradeGuiStatus
+
+    local function ensureNoTradeGui()
+        if noTradeGui and noTradeGui.Parent then
+            return noTradeGui
+        end
+
+        local playerGui = player:WaitForChild("PlayerGui")
+        local oldGui = playerGui:FindFirstChild("MagicDoorNoTradeTimer")
+        if oldGui then
+            oldGui:Destroy()
+        end
+
+        noTradeGui = Instance.new("ScreenGui")
+        noTradeGui.Name = "MagicDoorNoTradeTimer"
+        noTradeGui.ResetOnSpawn = false
+        noTradeGui.IgnoreGuiInset = false
+        noTradeGui.DisplayOrder = 999
+        noTradeGui.Enabled = settings.NoTradeHop
+        noTradeGui.Parent = playerGui
+
+        local frame = Instance.new("Frame")
+        frame.Name = "TimerFrame"
+        frame.Size = UDim2.fromOffset(230, 78)
+        frame.Position = UDim2.new(0.5, -115, 0, 70)
+        frame.BackgroundColor3 = Color3.fromRGB(24, 24, 28)
+        frame.BackgroundTransparency = 0.08
+        frame.BorderSizePixel = 0
+        frame.Active = true
+        frame.Draggable = true
+        frame.Parent = noTradeGui
+
+        local corner = Instance.new("UICorner")
+        corner.CornerRadius = UDim.new(0, 12)
+        corner.Parent = frame
+
+        local stroke = Instance.new("UIStroke")
+        stroke.Thickness = 1
+        stroke.Transparency = 0.55
+        stroke.Color = Color3.fromRGB(255, 255, 255)
+        stroke.Parent = frame
+
+        local title = Instance.new("TextLabel")
+        title.Name = "Title"
+        title.BackgroundTransparency = 1
+        title.Position = UDim2.fromOffset(12, 8)
+        title.Size = UDim2.new(1, -24, 0, 20)
+        title.Font = Enum.Font.GothamBold
+        title.Text = "NO TRADE HOP"
+        title.TextColor3 = Color3.fromRGB(235, 235, 240)
+        title.TextSize = 14
+        title.TextXAlignment = Enum.TextXAlignment.Left
+        title.Parent = frame
+
+        noTradeGuiStatus = Instance.new("TextLabel")
+        noTradeGuiStatus.Name = "Status"
+        noTradeGuiStatus.BackgroundTransparency = 1
+        noTradeGuiStatus.Position = UDim2.fromOffset(12, 30)
+        noTradeGuiStatus.Size = UDim2.new(1, -24, 0, 38)
+        noTradeGuiStatus.Font = Enum.Font.GothamMedium
+        noTradeGuiStatus.Text = "Teleporting in 5:00"
+        noTradeGuiStatus.TextColor3 = Color3.fromRGB(255, 255, 255)
+        noTradeGuiStatus.TextSize = 18
+        noTradeGuiStatus.TextWrapped = true
+        noTradeGuiStatus.TextXAlignment = Enum.TextXAlignment.Left
+        noTradeGuiStatus.TextYAlignment = Enum.TextYAlignment.Center
+        noTradeGuiStatus.Parent = frame
+
+        return noTradeGui
+    end
+
+    local function setNoTradeGuiVisible(visible)
+        local gui = ensureNoTradeGui()
+        if gui then
+            gui.Enabled = visible == true
+        end
+    end
+
+    local function setNoTradeStatus(text)
+        ensureNoTradeGui()
+        if noTradeGuiStatus then
+            noTradeGuiStatus.Text = tostring(text or "")
+        end
+    end
+
+    local function formatNoTradeCountdown(seconds)
+        seconds = math.max(0, math.ceil(tonumber(seconds) or 0))
+        local minutes = math.floor(seconds / 60)
+        local secs = seconds % 60
+        return string.format("%d:%02d", minutes, secs)
+    end
 
     local function resetNoTradeTimer(reason)
         state.lastTradeAcceptedAt = os.clock()
         state.noTradeExpiredLogged = false
+        setNoTradeGuiVisible(true)
+        setNoTradeStatus("Teleporting in 5:00")
         debugPrint("No-trade timer reset:", tostring(reason or "trade accepted"))
     end
 
@@ -1102,6 +1196,8 @@ local function LoadMain()
         settings.NoTradeHop = false
         state.noTradeHopLoopActive = false
         state.noTradeHopSession += 1
+        setNoTradeStatus("No Trade Hop is OFF")
+        setNoTradeGuiVisible(false)
         saveConfig()
     end
 
@@ -1130,6 +1226,10 @@ local function LoadMain()
                 local elapsed = os.clock() - state.lastTradeAcceptedAt
                 local remaining = NO_TRADE_HOP_SECONDS - elapsed
 
+                if remaining > 0 then
+                    setNoTradeStatus("Teleporting in " .. formatNoTradeCountdown(remaining))
+                end
+
                 if remaining <= 0 then
                     -- Revalidate the cached trade GUI before trusting inTrade.
                     -- Do NOT reset another full five minutes just because a trade
@@ -1139,11 +1239,13 @@ local function LoadMain()
                     end
 
                     if state.inTrade then
+                        setNoTradeStatus("Trade active - waiting to hop")
                         if not state.noTradeExpiredLogged then
                             state.noTradeExpiredLogged = true
                             debugPrint("No-trade timer expired; waiting for active trade to close.")
                         end
                     elseif not state.teleporting then
+                        setNoTradeStatus("Teleporting to Trading Hub...")
                         notify(
                             "No Trade Hop",
                             "No trade accepted for 5 minutes. Hopping to another Trading Hub...",
@@ -1630,6 +1732,12 @@ local function LoadMain()
     })
 
     MainTab:CreateLabel("If no trade is accepted for 5 minutes, it hops through the Trading Hub.")
+    MainTab:CreateLabel("The live countdown is shown in a draggable on-screen GUI.")
+    ensureNoTradeGui()
+    setNoTradeGuiVisible(settings.NoTradeHop)
+    if settings.NoTradeHop then
+        setNoTradeStatus("Teleporting in 5:00")
+    end
 
     --// FARM UI
     MainTab:CreateSection("🪄 Magic Door Farm")
@@ -2149,6 +2257,14 @@ local function LoadMain()
             end)
         end
         table.clear(trackedConnections)
+
+        if noTradeGui then
+            pcall(function()
+                noTradeGui:Destroy()
+            end)
+            noTradeGui = nil
+            noTradeGuiStatus = nil
+        end
 
         pcall(function()
             Rayfield:Destroy()
