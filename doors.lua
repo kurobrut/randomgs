@@ -1011,10 +1011,31 @@ local function LoadMain()
         end
     end))
 
+    local serverHopStatusLabel
+
+    local function setServerHopStatus(text)
+        if serverHopStatusLabel then
+            pcall(function()
+                serverHopStatusLabel:Set(text)
+            end)
+        end
+    end
+
+    local function formatHopCountdown(seconds)
+        seconds = math.max(0, math.ceil(tonumber(seconds) or 0))
+        local minutes = math.floor(seconds / 60)
+        local secs = seconds % 60
+        if minutes > 0 then
+            return string.format("%dm %02ds", minutes, secs)
+        end
+        return string.format("%ds", secs)
+    end
+
     local function stopServerHop()
         settings.AutoServerHop = false
         state.hopLoopActive = false
         state.hopSession += 1
+        setServerHopStatus("Status: Auto Server Hop is OFF")
         saveConfig()
     end
 
@@ -1039,14 +1060,26 @@ local function LoadMain()
                 local delayLeft = math.max(10, settings.ServerHopDelay)
 
                 while delayLeft > 0 and settings.AutoServerHop and state.hopSession == mySession do
-                    local step = math.min(0.5, delayLeft)
+                    setServerHopStatus("Status: Teleporting in " .. formatHopCountdown(delayLeft))
+
+                    local step = math.min(1, delayLeft)
                     task.wait(step)
                     delayLeft -= step
                 end
 
                 if settings.AutoServerHop and state.hopSession == mySession then
-                    serverHop(false, isActive)
+                    setServerHopStatus("Status: Teleporting to Trading Hub...")
+                    local requested = serverHop(false, isActive)
+
+                    if not requested and settings.AutoServerHop and state.hopSession == mySession then
+                        setServerHopStatus("Status: Teleport failed — restarting countdown...")
+                        task.wait(1)
+                    end
                 end
+            end
+
+            if state.hopSession == mySession and not settings.AutoServerHop then
+                setServerHopStatus("Status: Auto Server Hop is OFF")
             end
         end)
     end
@@ -1830,6 +1863,11 @@ local function LoadMain()
     --// SERVER HOP UI
     MainTab:CreateSection("🌍 Server Hop")
     MainTab:CreateLabel("Auto Hop requests a Trading Hub teleport after each Hop Delay.")
+    serverHopStatusLabel = MainTab:CreateLabel(
+        settings.AutoServerHop
+            and ("Status: Teleporting in " .. formatHopCountdown(math.max(10, settings.ServerHopDelay)))
+            or "Status: Auto Server Hop is OFF"
+    )
 
     local autoServerHopToggle = MainTab:CreateToggle({
         Name = "Auto Server Hop",
