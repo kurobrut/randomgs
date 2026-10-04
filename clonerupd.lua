@@ -690,9 +690,18 @@ local function loadMain()
 		return fallbackId
 	end
 
+	-- Queue cost is expensive for large house files. House data is immutable while
+	-- queued, so cache the result by houseData table instead of rescanning every item.
+	local queueHouseCostCache = setmetatable({}, { __mode = "k" })
+
 	local function getQueueHouseCost(houseData)
 		if type(houseData) ~= "table" then
 			return 0
+		end
+
+		local cached = queueHouseCostCache[houseData]
+		if cached ~= nil then
+			return cached
 		end
 
 		local furnitureCost = 0
@@ -712,7 +721,9 @@ local function loadMain()
 			end
 		end
 
-		return furnitureCost + textureCost
+		local total = furnitureCost + textureCost
+		queueHouseCostCache[houseData] = total
+		return total
 	end
 
 	local function getQueueTotalCost()
@@ -1303,68 +1314,82 @@ local function loadMain()
 
 	AutoPasteTab:CreateSection("Target Houses")
 
+	-- Only touch the Rayfield multi-select when the selected set really changed.
+	-- Refreshing/setting a 30+ item multi-select repeatedly is one of the biggest
+	-- frame spikes when Auto Paste Kalirem is enabled.
 	function kaliremAP.refreshDropdown()
-		if autoPasteDropdown then
-			autoPasteApplyingSavedTargets = true
-			pcall(function()
-				autoPasteDropdown:Refresh(ownedHouseList, true)
-				local selected = getAutoPasteTargetNames()
-				autoPasteDropdown:Set(selected)
-			end)
-			autoPasteApplyingSavedTargets = false
-		end
+		if not autoPasteDropdown then return end
+		autoPasteApplyingSavedTargets = true
+		pcall(function()
+			local selected = getAutoPasteTargetNames()
+			autoPasteDropdown:Set(selected)
+		end)
+		autoPasteApplyingSavedTargets = false
 	end
 
-	function kaliremAP.selectAvailable()
-		refreshOwnedHouses()
-
+	function kaliremAP.selectAvailable(forceUi)
 		local added = 0
 		local available = 0
+		local changed = false
 		local manager = {}
 		pcall(function()
 			manager = ClientData.get("house_manager") or {}
 		end)
 
-		local liveIds = {}
 		for _, house in pairs(manager) do
 			if type(house) == "table" and house.house_id ~= nil then
 				local houseId = house.house_id
 				local key = tostring(houseId)
-				liveIds[key] = true
 				local houseName = tostring(house.name or "")
 				if string.lower(houseName):match("^%s*kalirem") then
 					available += 1
+
+					-- Keep the lightweight maps current without rebuilding every dropdown.
 					local label = ownedHouseLabelById[houseId]
 						or (houseName ~= "" and houseName)
 						or ("Kalirem [" .. key .. "]")
+					ownedHouseLabelById[houseId] = label
+					ownedHouseMap[label] = houseId
 
 					if not autoPasteSelections[houseId] then
 						added += 1
+						changed = true
 						kaliremAP.autoSelected[key] = true
+						autoPasteSelections[houseId] = label
+					elseif autoPasteSelections[houseId] ~= label then
+						autoPasteSelections[houseId] = label
+						changed = true
 					end
-					autoPasteSelections[houseId] = label
 				end
 			end
 		end
 
+		if changed or forceUi then
+			kaliremAP.refreshDropdown()
+		end
 
-		kaliremAP.refreshDropdown()
-		autoSaveAutoPasteConfig()
-		return added, available
+		-- Auto-selected Kalirem targets are temporary. Do not serialize the whole
+		-- 30+ house fileQueue just because the detector found the same houses again.
+		return added, available, changed
 	end
 
 	function kaliremAP.removeAutomatic()
+		local changed = false
 		for key in pairs(kaliremAP.autoSelected) do
 			for houseId in pairs(autoPasteSelections) do
 				if tostring(houseId) == key then
 					autoPasteSelections[houseId] = nil
+					changed = true
 					break
 				end
 			end
 			kaliremAP.autoSelected[key] = nil
 		end
-		kaliremAP.refreshDropdown()
-		autoSaveAutoPasteConfig()
+		if changed then
+			kaliremAP.refreshDropdown()
+		end
+		-- No config save here: automatic Kalirem selections are intentionally
+		-- rediscovered each session and should not force a huge queue serialization.
 	end
 
 	function kaliremAP.setToggle(value, silent)
@@ -1383,7 +1408,8 @@ local function loadMain()
 
 		local added = 0
 		if value then
-			added = kaliremAP.selectAvailable()
+			-- One lightweight scan on enable. No full owned-house refresh/config save.
+			added = kaliremAP.selectAvailable(true)
 		else
 			kaliremAP.removeAutomatic()
 		end
@@ -1441,50 +1467,30 @@ local function loadMain()
 		end,
 	})
 
-	task.spawn(function()
-		while task.wait(1.5) do
-			local manager = {}
-			pcall(function()
-				manager = ClientData.get("house_manager") or {}
-			end)
-
-			local available = 0
-			local liveIds = {}
-
-			for _, house in pairs(manager) do
-				if type(house) == "table" and house.house_id ~= nil then
-					local key = tostring(house.house_id)
-					liveIds[key] = true
-
-					if string.lower(tostring(house.name or "")):match("^%s*kalirem") then
-						available += 1
-					end
-				end
-			end
-
-
-			if kaliremAP.enabled then
-				if available > 0 then
-
-					kaliremAP.selectAvailable()
-				else
-
-					kaliremAP.setToggle(false, true)
-				end
-			end
-	end
-	end)
+	-- No automatic house/Kalirem refresh loop.
+	-- The owned-house list and Kalirem targets are refreshed only when the
+	-- user presses the manual "Refresh House List" button below.
 
 	AutoPasteTab:CreateButton({
 		Name = "Refresh House List",
 		Callback = function()
-
+			-- Manual-only refresh. This is the ONLY place that refreshes the
+			-- owned-house dropdown for Auto Paste during normal use.
 			refreshOwnedHouses()
 			restorePendingAutoPasteTargets(true)
-			autoSaveAutoPasteConfig()
+
+			-- If Auto Paste Kalirem is enabled, update Kalirem targets now too.
+			-- Do not save the full queue here; that was a major source of lag
+			-- with 30+ queued house files.
+			local added = 0
+			if kaliremAP.enabled then
+				added = kaliremAP.selectAvailable(true)
+			end
+
 			Rayfield:Notify({
 				Title = "Auto Paste",
-				Content = "House list refreshed (" .. #ownedHouseList .. " houses). Saved targets were preserved.",
+				Content = "House list refreshed (" .. #ownedHouseList .. " houses)."
+					.. (kaliremAP.enabled and (" Added " .. tostring(added) .. " new Kalirem target(s).") or ""),
 				Duration = 4,
 			})
 		end,
@@ -1946,11 +1952,12 @@ local function loadMain()
 			task.spawn(function()
 				setAPStatus("Running")
 
-				-- Keep queue labels visually synchronized while Auto Paste is active.
+				-- The queue UI does not need to be recomputed 4x/second. Queue mutations
+				-- already call setAPFileInfo(), so this is only a slow safety sync.
 				task.spawn(function()
 					while autoPasteRunning and not stopFlag do
+						task.wait(2)
 						setAPFileInfo()
-						task.wait(0.25)
 					end
 					setAPFileInfo()
 				end)
