@@ -180,6 +180,10 @@ local function LoadMain()
         inTrade = false,
         tradeSignalName = "None",
         lastTradeAcceptedAt = os.clock(),
+        -- Single authoritative deadline for the live No Trade Hop countdown.
+        -- Every reset moves this deadline forward by a full 5 minutes.
+        noTradeDeadline = os.clock() + 300,
+        noTradeTimerVersion = 0,
         activeDoorInstance = nil,
         activeDoorPlacedAt = nil,
         noTradeExpiredLogged = false,
@@ -1185,11 +1189,27 @@ local function LoadMain()
     end
 
     local function resetNoTradeTimer(reason)
-        state.lastTradeAcceptedAt = os.clock()
+        local now = os.clock()
+
+        -- Update the stored timestamp and the exact deadline together.
+        -- The live GUI reads ONLY from noTradeDeadline, so an older countdown
+        -- value can never overwrite a fresh 5:00 reset.
+        state.lastTradeAcceptedAt = now
+        state.noTradeDeadline = now + NO_TRADE_HOP_SECONDS
+        state.noTradeTimerVersion += 1
         state.noTradeExpiredLogged = false
-        setNoTradeGuiVisible(true)
-        setNoTradeStatus("Teleporting in 5:00")
-        debugPrint("No-trade timer reset:", tostring(reason or "trade accepted"))
+
+        setNoTradeGuiVisible(settings.NoTradeHop)
+        if settings.NoTradeHop then
+            setNoTradeStatus("Teleporting in 5:00")
+        end
+
+        debugPrint(
+            "No-trade timer reset:",
+            tostring(reason or "trade accepted"),
+            "version",
+            state.noTradeTimerVersion
+        )
     end
 
     local function stopNoTradeHop()
@@ -1223,8 +1243,10 @@ local function LoadMain()
 
         task.spawn(function()
             while isActive() do
-                local elapsed = os.clock() - state.lastTradeAcceptedAt
-                local remaining = NO_TRADE_HOP_SECONDS - elapsed
+                -- Always calculate from the current authoritative deadline.
+                -- If a trade resets the timer while this loop is running,
+                -- the very next GUI refresh immediately uses the new 5-minute deadline.
+                local remaining = state.noTradeDeadline - os.clock()
 
                 if remaining > 0 then
                     setNoTradeStatus("Teleporting in " .. formatNoTradeCountdown(remaining))
@@ -1264,7 +1286,9 @@ local function LoadMain()
                     end
                 end
 
-                task.wait(1)
+                -- Faster refresh keeps the on-screen countdown visibly in sync
+                -- with a reset instead of waiting up to a full second.
+                task.wait(0.2)
             end
 
             if state.noTradeHopSession == mySession then
@@ -1941,8 +1965,7 @@ local function LoadMain()
     MainTab:CreateButton({
         Name = "Show Trade / Hop Timer Status",
         Callback = function()
-            local elapsed = math.max(0, os.clock() - state.lastTradeAcceptedAt)
-            local remaining = math.max(0, NO_TRADE_HOP_SECONDS - elapsed)
+            local remaining = math.max(0, state.noTradeDeadline - os.clock())
 
             notify(
                 "Trade Timer",
