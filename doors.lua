@@ -1196,7 +1196,7 @@ local function LoadMain()
             root.CFrame
             * CFrame.new(
                 0,
-                -3,
+                -4,
                 -math.max(
                     2,
                     settings.PlacementDistance
