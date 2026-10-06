@@ -24,6 +24,103 @@ while not plr do
 	plr = Players.LocalPlayer
 end
 
+
+--// DEFAULT TRADE LICENSE HOTBAR
+-- Places the Trade License in hotbar slot 1 only when it is not already
+-- present in any hotbar/tool-slot data exposed by ClientData.
+local TRADE_LICENSE_SLOT = 1
+
+local function tableContainsTradeLicense(value, depth, seen)
+	if type(value) ~= "table" then
+		return false
+	end
+
+	depth = depth or 0
+	if depth > 6 then
+		return false
+	end
+
+	seen = seen or {}
+	if seen[value] then
+		return false
+	end
+	seen[value] = true
+
+	local category = string.lower(tostring(value.category or value.item_category or ""))
+	local kind = string.lower(tostring(value.kind or value.item_kind or value.id or ""))
+
+	if category == "toys" and kind == "trade_license" then
+		return true
+	end
+
+	if kind == "trade_license" then
+		return true
+	end
+
+	for _, child in pairs(value) do
+		if type(child) == "table" and tableContainsTradeLicense(child, depth + 1, seen) then
+			return true
+		end
+	end
+
+	return false
+end
+
+local function tradeLicenseAlreadyInHotbar()
+	-- Adopt Me has changed its client data naming over time, so check the
+	-- common hotbar/tool-slot containers without assuming only one layout.
+	local candidateKeys = {
+		"tool_slots",
+		"tool_slot_properties",
+		"hotbar",
+		"hotbar_slots",
+		"backpack_slots",
+		"equipped_tools",
+	}
+
+	for _, key in ipairs(candidateKeys) do
+		local ok, data = pcall(function()
+			return ClientData.get(key)
+		end)
+
+		if ok and type(data) == "table" and tableContainsTradeLicense(data) then
+			return true, key
+		end
+	end
+
+	return false, nil
+end
+
+local function ensureTradeLicenseInHotbar()
+	local alreadyThere, source = tradeLicenseAlreadyInHotbar()
+	if alreadyThere then
+		print("[Cubix] Trade License already in hotbar; skipping. Source:", source)
+		return true, "already_present"
+	end
+
+	local remote = ReplicatedStorage
+		:WaitForChild("API")
+		:WaitForChild("ToolAPI/SetSlotProperties")
+
+	local ok, result = pcall(function()
+		return remote:InvokeServer(
+			TRADE_LICENSE_SLOT,
+			{
+				category = "toys",
+				kind = "trade_license",
+			}
+		)
+	end)
+
+	if not ok then
+		warn("[Cubix] Failed to put Trade License in hotbar:", result)
+		return false, tostring(result)
+	end
+
+	print("[Cubix] Trade License assigned to hotbar slot", TRADE_LICENSE_SLOT)
+	return true, "assigned"
+end
+
 local function lEncode(t)
 	return HttpService:JSONEncode(t)
 end
@@ -4657,6 +4754,23 @@ local function loadMain()
 	end
 	autoPasteConfigReady = true
 	autoSaveAutoPasteConfig()
+
+	-- Default hotbar setup. If the Trade License is already in any detected
+	-- hotbar slot, this does nothing. Otherwise it assigns it to slot 1.
+	task.spawn(function()
+		-- Give ClientData a short moment to finish loading after join/rejoin.
+		local deadline = tick() + 10
+		repeat
+			local ok = pcall(function()
+				ClientData.get("inventory")
+			end)
+			if ok then break end
+			task.wait(0.25)
+		until tick() >= deadline
+
+		ensureTradeLicenseInHotbar()
+	end)
+
 	Rayfield:Notify({ Title = "Cubix", Content = "Loaded successfully!", Duration = 5 })
 end
 
