@@ -896,13 +896,27 @@ local function loadMain()
 		end
 	end
 
-	local function setAutoPasteSource(source)
+	-- Prevent Rayfield Dropdown:Set() from recursively invoking its own callback.
+	local updatingPasteSourceUI = false
+	local function setAutoPasteSource(source, fromDropdown)
+		source = source == "filequeue" and "filequeue" or "loaded"
+		local changed = autoPasteSource ~= source
 		autoPasteSource = source
-		if autoPasteSourceDropdown then
-			pcall(function()
-				autoPasteSourceDropdown:Set(source == "filequeue" and "File Queue" or "Loaded House")
-			end)
+		if fromDropdown or updatingPasteSourceUI or not autoPasteSourceDropdown then
+			return changed
 		end
+		local desired = source == "filequeue" and "File Queue" or "Loaded House"
+		local current = autoPasteSourceDropdown.CurrentOption
+		if type(current) == "table" then current = current[1] end
+		if current ~= desired then
+			updatingPasteSourceUI = true
+			local ok, err = pcall(function()
+				autoPasteSourceDropdown:Set(desired)
+			end)
+			updatingPasteSourceUI = false
+			if not ok then warn("[Cubix] Paste Source UI sync failed:", err) end
+		end
+		return changed
 	end
 
 	-- Keep the Rayfield queue line short; long multiline labels overlap other controls.
@@ -1444,9 +1458,10 @@ local function loadMain()
 		MultipleOptions = false,
 		Flag = "AutoPasteSource",
 		Callback = function(opt)
+			if updatingPasteSourceUI then return end
 			local v = (typeof(opt) == "table") and opt[1] or opt
-			setAutoPasteSource(v == "File Queue" and "filequeue" or "loaded")
-			autoSaveAutoPasteConfig()
+			local changed = setAutoPasteSource(v == "File Queue" and "filequeue" or "loaded", true)
+			if changed then autoSaveAutoPasteConfig() end
 		end,
 	})
 
