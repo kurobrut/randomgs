@@ -2943,15 +2943,40 @@ local function loadMain()
 			pcall(env.__CubixStopTradePopupHiding)
 		end
 		env.__CubixStopTradePopupHiding = function()
+			env.__CubixPopupStartupToken = (env.__CubixPopupStartupToken or 0) + 1
 			setPopupDisabled(false)
 		end
 
-		TradeTab:CreateToggle({
+		local popupToggle = TradeTab:CreateToggle({
 			Name = "Disable Trade Popups",
 			CurrentValue = false,
-			Flag = "CubixDisableTradePopupsDialogOnlyV4",
+			Flag = "CubixDisableTradePopupsDialogOnlyV5",
 			Callback = setPopupDisabled,
 		})
+
+		-- Autoexecute-safe: wait until the character and the game dialog exist.
+		-- Only DialogApp.Dialog is ever changed by the popup controller.
+		env.__CubixPopupStartupToken = (env.__CubixPopupStartupToken or 0) + 1
+		local myToken = env.__CubixPopupStartupToken
+		task.spawn(function()
+			local character = plr.Character or plr.CharacterAdded:Wait()
+			if not character:WaitForChild("Humanoid", 30)
+				or not character:WaitForChild("HumanoidRootPart", 30) then
+				warn("[Cubix Popup] Character not ready; leaving popup toggle off")
+				return
+			end
+			local dialogApp = playerGui:WaitForChild("DialogApp", 40)
+			local dialog = dialogApp and dialogApp:WaitForChild("Dialog", 30)
+			if not (dialog and dialog:IsA("GuiObject")) then
+				warn("[Cubix Popup] Dialog not ready; leaving popup toggle off")
+				return
+			end
+			task.wait(2) -- Extra time for Adopt Me's UI initialization
+			if env.__CubixPopupStartupToken ~= myToken then return end
+			pcall(function() popupToggle:Set(true) end)
+			setPopupDisabled(true)
+			print("[Cubix Popup] Character and UI loaded; DialogApp.Dialog hiding enabled")
+		end)
 	end
 
 	tradeDropdown = TradeTab:CreateDropdown({
