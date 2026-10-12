@@ -116,13 +116,6 @@ local function ensureTradeLicenseInHotbar()
 	return true, "assigned"
 end
 
-local function lEncode(t)
-	return HttpService:JSONEncode(t)
-end
-local function lDecode(s)
-	return HttpService:JSONDecode(s)
-end
-
 local function loadMain()
 	local fetchOk, rayfieldSource = pcall(function()
 		return game:HttpGet("https://sirius.menu/rayfield")
@@ -143,6 +136,7 @@ local function loadMain()
 		Name = "Cubix . House Cloner ",
 		LoadingTitle = "Cubix",
 		LoadingSubtitle = "House Cloner",
+		ShowText = "Cubix",
 		Theme = "Amethyst",
 		ConfigurationSaving = {
 			Enabled = type(writefile) == "function" and type(readfile) == "function" and type(isfolder) == "function",
