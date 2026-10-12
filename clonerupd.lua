@@ -509,6 +509,8 @@ local function loadMain()
 
 	local queueDataFolder = houseSettingsPath .. "/queue_data"
 	local pasteHistoryPath = houseSettingsPath .. "/paste_history.json"
+	local freshPurchasesPath = houseSettingsPath .. "/fresh_purchases.json"
+	local freshPurchases = {}
 	local pasteCheckpointPath = houseSettingsPath .. "/paste_checkpoint.json"
 	local pasteHistory = {}
 	local pasteCheckpoint = nil
@@ -531,12 +533,27 @@ local function loadMain()
 	local function saveHistory()
 		return safeWriteJSON(pasteHistoryPath, pasteHistory)
 	end
+	local function markFreshPurchase(houseId)
+		if houseId == nil then return end
+		local key = tostring(houseId)
+		freshPurchases[key] = os.time()
+		local saved, err = safeWriteJSON(freshPurchasesPath, freshPurchases)
+		if not saved then warn("[Cubix] Could not save newly purchased house:", err) end
+		print("[Cubix] New purchase eligible for paste:", key)
+	end
+	local function wasPreviouslyCompleted(houseId)
+		local key = tostring(houseId)
+		return pasteHistory[key] ~= nil and freshPurchases[key] == nil
+	end
 	local function recordPasteSuccess(houseId, houseName, sourceName)
 		pasteHistory[tostring(houseId)] = {
 			house_id = tostring(houseId), name = tostring(houseName),
 			source = tostring(sourceName or "Loaded House"), timestamp = os.time()
 		}
 		saveHistory()
+		-- The new purchase is now legitimately completed.
+		freshPurchases[tostring(houseId)] = nil
+		safeWriteJSON(freshPurchasesPath, freshPurchases)
 		persistCheckpoint(nil)
 	end
 	local function countFurniture(houseData)
@@ -2259,7 +2276,7 @@ local function loadMain()
 
 		for id in pairs(autoPasteSelections) do
 			local key = tostring(id)
-			if not seen[key] and not (skipCompletedHouses and pasteHistory[key]) then
+			if not seen[key] and not (skipCompletedHouses and wasPreviouslyCompleted(key)) then
 				seen[key] = true
 				table.insert(ids, id)
 			end
@@ -2274,7 +2291,7 @@ local function loadMain()
 			for _, house in pairs(manager) do
 				if type(house) == "table" and house.house_id ~= nil and kaliremAP.isName(house.name) then
 					local key = tostring(house.house_id)
-					if not seen[key] and not (skipCompletedHouses and pasteHistory[key]) then
+					if not seen[key] and not (skipCompletedHouses and wasPreviouslyCompleted(key)) then
 						seen[key] = true
 						autoPasteSelections[house.house_id] = tostring(house.name or ("Kalirem [" .. key .. "]"))
 						table.insert(ids, house.house_id)
@@ -2577,6 +2594,8 @@ local function loadMain()
 		end
 
 		for _, house in ipairs(newHouses) do
+			-- Only purchase-confirmed new house IDs bypass old completion records.
+			markFreshPurchase(house.house_id)
 			maxNumber += 1
 			local newName = "Kalirem " .. maxNumber
 			local ok = pcall(function()
@@ -5146,6 +5165,7 @@ local function loadMain()
 	end)
 
 	pasteHistory = safeReadJSON(pasteHistoryPath) or {}
+	freshPurchases = safeReadJSON(freshPurchasesPath) or {}
 	pasteCheckpoint = safeReadJSON(pasteCheckpointPath)
 	if pasteCheckpoint and pasteCheckpoint.state == "idle" then pasteCheckpoint = nil end
 	refreshOwnedHouses()
