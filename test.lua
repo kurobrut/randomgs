@@ -1,3 +1,6 @@
+-- Cubix House Cloner - Delta Mobile Clean (Windows compatibility layer removed)
+-- Retains prior queue UI, history, safety checks, saved formats, and house IDs.
+-- Note: Luau compilation and in-game executor behavior must be tested in Delta.
 if not game:IsLoaded() then
 	game.Loaded:Wait()
 end
@@ -150,38 +153,15 @@ local function loadMain()
 		LoadingSubtitle = "House Cloner",
 		Theme = "Amethyst",
 		ConfigurationSaving = {
-			Enabled = true,
+			Enabled = type(writefile) == "function" and type(readfile) == "function" and type(isfolder) == "function",
 			FileName = "CubixAutoPasteV3",
 		},
 		Discord = {
-			Enabled = true,
+			Enabled = false,
 			Invite = "VVsxaBNakm",
 			RememberJoins = false,
 		},
 	})
-
-	-- Some Windows executors cannot access Instance through Rayfield's icon/label path.
-	-- Retry without icon, then use a paragraph. Never block the full cloner for a label.
-	local function safeCreateLabel(tab, message, icon)
-		local ok, control = pcall(function() return tab:CreateLabel(message, icon) end)
-		if not ok then
-			warn("[Cubix UI] Icon label unavailable: " .. tostring(control))
-			ok, control = pcall(function() return tab:CreateLabel(message) end)
-		end
-		if ok and control then return control end
-		local initial = tostring(message or "")
-		local paraOk, para = pcall(function()
-			return tab:CreateParagraph({ Title = "Cubix", Content = initial })
-		end)
-		if paraOk and para then
-			return { Set = function(_, value)
-				local valueStr = tostring(value or "")
-				pcall(function() para:Set({ Title = "Cubix", Content = valueStr }) end)
-			end }
-		end
-		warn("[Cubix UI] Label unavailable; cloner will continue: " .. tostring(control))
-		return { Set = function() end }
-	end
 
 	local savedhouse = nil
 	local stopFlag = false
@@ -213,10 +193,10 @@ local function loadMain()
 	local TradeTab = Window:CreateTab("Trading", "repeat")
 
 	Manager:CreateSection("Scan Information")
-	local furniture_label = safeCreateLabel(Manager, "House Furniture: 0 ($0)", "armchair")
-	local textures_label = safeCreateLabel(Manager, "House Textures: 0 ($0)", "grid-2x2")
-	local ambiance_label = safeCreateLabel(Manager, "House Ambiance: No", "sun")
-	local type_label = safeCreateLabel(Manager, "House Type: -", "home")
+	local furniture_label = Manager:CreateLabel("House Furniture: 0 ($0)", "armchair")
+	local textures_label = Manager:CreateLabel("House Textures: 0 ($0)", "grid-2x2")
+	local ambiance_label = Manager:CreateLabel("House Ambiance: No", "sun")
+	local type_label = Manager:CreateLabel("House Type: -", "home")
 
 	local scanInfoGui
 	local scanInfoFrame
@@ -293,9 +273,9 @@ local function loadMain()
 	end
 
 	Manager:CreateSection("Process Status")
-	local status_label = safeCreateLabel(Manager, "Building Status: Idle", "activity")
-	local prog_label = safeCreateLabel(Manager, "Building Prog: -", "trending-up")
-	local item_label = safeCreateLabel(Manager, "Items: -", "box")
+	local status_label = Manager:CreateLabel("Building Status: Idle", "activity")
+	local prog_label = Manager:CreateLabel("Building Prog: -", "trending-up")
+	local item_label = Manager:CreateLabel("Items: -", "box")
 
 	local function setscaninfo(f_count, f_cost, t_count, t_cost, amb, typ)
 		scanInfoValues = { f_count, f_cost, t_count, t_cost, amb, typ }
@@ -957,13 +937,13 @@ local function loadMain()
 		overlay.Name = "Window"
 		overlay.AnchorPoint = Vector2.new(0.5, 0.5)
 		overlay.Position = UDim2.fromScale(0.5, 0.5)
-		overlay.Size = UDim2.new(0.88, 0, 0.78, 0)
+		overlay.Size = UDim2.new(0.94, 0, 0.84, 0)
 		overlay.BackgroundColor3 = Color3.fromRGB(25, 23, 36)
 		overlay.BorderSizePixel = 0
 		overlay.Parent = gui
 		local maxSize = Instance.new("UISizeConstraint")
-		maxSize.MaxSize = Vector2.new(620, 570)
-		maxSize.MinSize = Vector2.new(260, 230)
+		maxSize.MaxSize = Vector2.new(440, 470)
+		maxSize.MinSize = Vector2.new(240, 210)
 		maxSize.Parent = overlay
 		local corner = Instance.new("UICorner")
 		corner.CornerRadius = UDim.new(0, 12)
@@ -1454,7 +1434,7 @@ local function loadMain()
 	end
 
 	refreshOwnedHouses()
-	safeCreateLabel(AutoPasteTab, "Use the current loaded house, or queue files from HouseFS/Houses.", "info")
+	AutoPasteTab:CreateLabel("Use the current loaded house, or queue files from HouseFS/Houses.", "info")
 
 	AutoPasteTab:CreateSection("Source")
 	autoPasteSourceDropdown = AutoPasteTab:CreateDropdown({
@@ -1576,7 +1556,7 @@ local function loadMain()
 		end,
 	})
 
-	fqQueueListLabel = safeCreateLabel(AutoPasteTab, "Queue: 0 file(s) | Next: (empty)", "list")
+	fqQueueListLabel = AutoPasteTab:CreateLabel("Queue: 0 file(s) | Next: (empty)", "list")
 	AutoPasteTab:CreateButton({
 		Name = "View Queue (Scrollable)",
 		Callback = function()
@@ -1913,10 +1893,10 @@ local function loadMain()
 		end,
 	})
 
-	autoPasteStatus = safeCreateLabel(AutoPasteTab, "Status: Idle", "activity")
-	autoPasteProgress = safeCreateLabel(AutoPasteTab, "Progress: -", "trending-up")
-	autoPasteFileInfo = safeCreateLabel(AutoPasteTab, "File Queue: 0 file(s)", "list")
-	autoPasteQueueCostLabel = safeCreateLabel(AutoPasteTab, "Queued Total Cost: $0", "list")
+	autoPasteStatus = AutoPasteTab:CreateLabel("Status: Idle", "activity")
+	autoPasteProgress = AutoPasteTab:CreateLabel("Progress: -", "trending-up")
+	autoPasteFileInfo = AutoPasteTab:CreateLabel("File Queue: 0 file(s)", "list")
+	autoPasteQueueCostLabel = AutoPasteTab:CreateLabel("Queued Total Cost: $0", "list")
 
 	local function setAPStatus(s) pcall(function() autoPasteStatus:Set("Status: " .. s) end) end
 	local function setAPProg(s)   pcall(function() autoPasteProgress:Set("Progress: " .. s) end) end
@@ -3383,11 +3363,10 @@ local function loadMain()
 		return t
 	end
 
-	safeCreateLabel(Tab, 
-		"If you are using glitch houses, use the slow paste. And if you are using normal houses, use the fast paste. If you use it on higher builds expect lagging or crashing.",
+	Tab:CreateLabel("If you are using glitch houses, use the slow paste. And if you are using normal houses, use the fast paste. If you use it on higher builds expect lagging or crashing.",
 		"info"
 	)
-	safeCreateLabel(Tab, "Do not Touch", "info")
+	Tab:CreateLabel("Do not Touch", "info")
 
 	Pastetextures = Tab:CreateToggle({
 		Name = "Paste textures",
@@ -4538,8 +4517,7 @@ local function loadMain()
 	local userPastebinUsername = ""
 	local userPastebinPassword = ""
 
-	safeCreateLabel(PastebinTab, 
-		"TO GET DEV API KEY YOU NEED TO MAKE ACCOUNT ON PASTEBIN AFTER THAT GO TO https://pastebin.com/doc_api AND COPY YOUR DEV API KEY",
+	PastebinTab:CreateLabel("TO GET DEV API KEY YOU NEED TO MAKE ACCOUNT ON PASTEBIN AFTER THAT GO TO https://pastebin.com/doc_api AND COPY YOUR DEV API KEY",
 		"info"
 	)
 	PastebinTab:CreateDivider()
@@ -4647,6 +4625,8 @@ local function loadMain()
 		end,
 	})
 
+	-- Separate function scope prevents Luau 200-local register overflow in loadMain.
+	local function initializeFileManagementTabs()
 	local CreateFileTab = Window:CreateTab("Create File", "folder")
 
 	if not isfolder(houseFilesPath) then makefolder(houseFilesPath) end
@@ -4874,7 +4854,7 @@ local function loadMain()
 		local outputName = ""
 		local busy = false
 		local sourceDropdown
-		local status = safeCreateLabel(ConverterTab, "Put source JSON files in HouseFS/Convert, then refresh the list.", "info")
+		local status = ConverterTab:CreateLabel("Put source JSON files in HouseFS/Convert, then refresh the list.", "info")
 
 		local function ensureFolders()
 			for _, path in ipairs({houseFSPath, convertPath, houseFilesPath}) do
@@ -5036,6 +5016,11 @@ local function loadMain()
 		refreshSources()
 	end
 
+	end -- initializeFileManagementTabs
+	initializeFileManagementTabs()
+
+	-- Keep the teleport controls and startup jobs in their own register scope.
+	local function initializeTeleportAndStartup()
 	local Teleport = Window:CreateTab("Teleport", "map-pin")
 	Teleport:CreateSection("House Teleports")
 
@@ -5155,6 +5140,16 @@ local function loadMain()
 	end)
 
 	Rayfield:Notify({ Title = "Cubix", Content = "Loaded successfully!", Duration = 5 })
+	end -- initializeTeleportAndStartup
+	initializeTeleportAndStartup()
 end
 
-loadMain()
+-- Protected startup prints an actionable mobile executor error.
+local startupOk, startupErr = xpcall(loadMain, function(err)
+    local trace = (debug and type(debug.traceback) == "function") and debug.traceback(tostring(err), 2) or tostring(err)
+    warn("[Cubix Mobile Startup Error] " .. trace)
+    return trace
+end)
+if not startupOk then
+    warn("[Cubix] Startup failed. See the error printed above: " .. tostring(startupErr))
+end
