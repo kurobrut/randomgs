@@ -1,5 +1,3 @@
-
-
 if not game:IsLoaded() then
 	game.Loaded:Wait()
 end
@@ -24,6 +22,27 @@ local plr = Players.LocalPlayer
 while not plr do
 	task.wait()
 	plr = Players.LocalPlayer
+end
+
+local function compatibleLabel(tab, message, icon)
+    local ok, label = pcall(function()
+        return tab:CreateLabel(message, icon)
+    end)
+    if ok and label then return label end
+    local fallbackOk, paragraph = pcall(function()
+        return tab:CreateParagraph({Title = "", Content = tostring(message)})
+    end)
+    if fallbackOk and paragraph then
+        return {
+            Set = function(_, value)
+                pcall(function()
+                    paragraph:Set({Title = "", Content = tostring(value)})
+                end)
+            end
+        }
+    end
+    warn("[Cubix UI] Label unavailable; continuing without it: " .. tostring(message))
+    return {Set = function() end}
 end
 
 local TRADE_LICENSE_SLOT = 1
@@ -187,10 +206,10 @@ local function loadMain()
 	local TradeTab = Window:CreateTab("Trading", "repeat")
 
 	Manager:CreateSection("Scan Information")
-	local furniture_label = Manager:CreateLabel("House Furniture: 0 ($0)", "armchair")
-	local textures_label = Manager:CreateLabel("House Textures: 0 ($0)", "grid-2x2")
-	local ambiance_label = Manager:CreateLabel("House Ambiance: No", "sun")
-	local type_label = Manager:CreateLabel("House Type: -", "home")
+	local furniture_label = compatibleLabel(Manager, "House Furniture: 0 ($0)", "armchair")
+	local textures_label = compatibleLabel(Manager, "House Textures: 0 ($0)", "grid-2x2")
+	local ambiance_label = compatibleLabel(Manager, "House Ambiance: No", "sun")
+	local type_label = compatibleLabel(Manager, "House Type: -", "home")
 
 	local scanInfoGui
 	local scanInfoFrame
@@ -267,9 +286,9 @@ local function loadMain()
 	end
 
 	Manager:CreateSection("Process Status")
-	local status_label = Manager:CreateLabel("Building Status: Idle", "activity")
-	local prog_label = Manager:CreateLabel("Building Prog: -", "trending-up")
-	local item_label = Manager:CreateLabel("Items: -", "box")
+	local status_label = compatibleLabel(Manager, "Building Status: Idle", "activity")
+	local prog_label = compatibleLabel(Manager, "Building Prog: -", "trending-up")
+	local item_label = compatibleLabel(Manager, "Items: -", "box")
 
 	local function setscaninfo(f_count, f_cost, t_count, t_cost, amb, typ)
 		scanInfoValues = { f_count, f_cost, t_count, t_cost, amb, typ }
@@ -1427,7 +1446,7 @@ local function loadMain()
 	end
 
 	refreshOwnedHouses()
-	AutoPasteTab:CreateLabel("Use the current loaded house, or queue files from HouseFS/Houses.", "info")
+	compatibleLabel(AutoPasteTab, "Use the current loaded house, or queue files from HouseFS/Houses.", "info")
 
 	AutoPasteTab:CreateSection("Source")
 	autoPasteSourceDropdown = AutoPasteTab:CreateDropdown({
@@ -1550,7 +1569,7 @@ local function loadMain()
 		end,
 	})
 
-	fqQueueListLabel = AutoPasteTab:CreateLabel("Queue: 0 file(s) | Next: (empty)", "list")
+	fqQueueListLabel = compatibleLabel(AutoPasteTab, "Queue: 0 file(s) | Next: (empty)", "list")
 	AutoPasteTab:CreateButton({
 		Name = "View Queue (Scrollable)",
 		Callback = function()
@@ -1853,10 +1872,10 @@ local function loadMain()
 		end,
 	})
 
-	autoPasteStatus = AutoPasteTab:CreateLabel("Status: Idle", "activity")
-	autoPasteProgress = AutoPasteTab:CreateLabel("Progress: -", "trending-up")
-	autoPasteFileInfo = AutoPasteTab:CreateLabel("File Queue: 0 file(s)", "list")
-	autoPasteQueueCostLabel = AutoPasteTab:CreateLabel("Queued Total Cost: $0", "list")
+	autoPasteStatus = compatibleLabel(AutoPasteTab, "Status: Idle", "activity")
+	autoPasteProgress = compatibleLabel(AutoPasteTab, "Progress: -", "trending-up")
+	autoPasteFileInfo = compatibleLabel(AutoPasteTab, "File Queue: 0 file(s)", "list")
+	autoPasteQueueCostLabel = compatibleLabel(AutoPasteTab, "Queued Total Cost: $0", "list")
 
 	local function setAPStatus(s) pcall(function() autoPasteStatus:Set("Status: " .. s) end) end
 	local function setAPProg(s)   pcall(function() autoPasteProgress:Set("Progress: " .. s) end) end
@@ -3387,10 +3406,10 @@ local function loadMain()
 		return t
 	end
 
-	Tab:CreateLabel("If you are using glitch houses, use the slow paste. And if you are using normal houses, use the fast paste. If you use it on higher builds expect lagging or crashing.",
+	compatibleLabel(Tab, "If you are using glitch houses, use the slow paste. And if you are using normal houses, use the fast paste. If you use it on higher builds expect lagging or crashing.",
 		"info"
 	)
-	Tab:CreateLabel("Do not Touch", "info")
+	compatibleLabel(Tab, "Do not Touch", "info")
 
 	Pastetextures = Tab:CreateToggle({
 		Name = "Paste textures",
@@ -4541,7 +4560,7 @@ local function loadMain()
 	local userPastebinUsername = ""
 	local userPastebinPassword = ""
 
-	PastebinTab:CreateLabel("TO GET DEV API KEY YOU NEED TO MAKE ACCOUNT ON PASTEBIN AFTER THAT GO TO https://pastebin.com/doc_api AND COPY YOUR DEV API KEY",
+	compatibleLabel(PastebinTab, "TO GET DEV API KEY YOU NEED TO MAKE ACCOUNT ON PASTEBIN AFTER THAT GO TO https://pastebin.com/doc_api AND COPY YOUR DEV API KEY",
 		"info"
 	)
 	PastebinTab:CreateDivider()
@@ -4877,7 +4896,7 @@ local function loadMain()
 		local outputName = ""
 		local busy = false
 		local sourceDropdown
-		local status = ConverterTab:CreateLabel("Put source JSON files in HouseFS/Convert, then refresh the list.", "info")
+		local status = compatibleLabel(ConverterTab, "Put source JSON files in HouseFS/Convert, then refresh the list.", "info")
 
 		local function ensureFolders()
 			for _, path in ipairs({houseFSPath, convertPath, houseFilesPath}) do
