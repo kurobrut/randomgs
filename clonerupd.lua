@@ -1052,7 +1052,7 @@ local function loadMain()
 				Instance.new("UICorner", row).CornerRadius = UDim.new(0, 7)
 				local nameLabel = Instance.new("TextLabel")
 				nameLabel.Position = UDim2.fromOffset(10, 4)
-				nameLabel.Size = UDim2.new(1, -20, 0, 23)
+				nameLabel.Size = UDim2.new(1, -103, 0, 23)
 				nameLabel.BackgroundTransparency = 1
 				nameLabel.TextXAlignment = Enum.TextXAlignment.Left
 				nameLabel.TextTruncate = Enum.TextTruncate.AtEnd
@@ -1063,7 +1063,7 @@ local function loadMain()
 				nameLabel.Parent = row
 				local info = Instance.new("TextLabel")
 				info.Position = UDim2.fromOffset(10, 27)
-				info.Size = UDim2.new(1, -20, 0, 18)
+				info.Size = UDim2.new(1, -103, 0, 18)
 				info.BackgroundTransparency = 1
 				info.TextXAlignment = Enum.TextXAlignment.Left
 				info.TextTruncate = Enum.TextTruncate.AtEnd
@@ -1072,6 +1072,42 @@ local function loadMain()
 				info.Font = Enum.Font.Gotham
 				info.TextSize = 11
 				info.Parent = row
+
+				-- Remove this exact queue entry (not every copy of the same file).
+				local removeButton = Instance.new("TextButton")
+				removeButton.Name = "RemoveEntry"
+				removeButton.AnchorPoint = Vector2.new(1, 0.5)
+				removeButton.Position = UDim2.new(1, -9, 0.5, 0)
+				removeButton.Size = UDim2.fromOffset(75, 32)
+				removeButton.BackgroundColor3 = Color3.fromRGB(144, 53, 73)
+				removeButton.BorderSizePixel = 0
+				removeButton.Text = "Remove"
+				removeButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+				removeButton.Font = Enum.Font.GothamBold
+				removeButton.TextSize = 12
+				removeButton.Parent = row
+				Instance.new("UICorner", removeButton).CornerRadius = UDim.new(0, 6)
+				removeButton.MouseButton1Click:Connect(function()
+					-- Avoid changing indices while an active paste/buy task uses the queue.
+					if autoPasteRunning or autoBuyQueuedRunning then
+						pcall(function()
+							Rayfield:Notify({Title="File Queue", Content="Stop Auto Paste / Auto Buy before removing queue entries.", Duration=4})
+						end)
+						return
+					end
+					local removeIndex = table.find(fileQueue, entry)
+					if not removeIndex then return end
+					local removed = table.remove(fileQueue, removeIndex)
+					rebuildQueueLabel()
+					setAPFileInfo()
+					local ok, saved, saveErr = pcall(saveAutoPasteConfig)
+					if not ok or not saved then
+						warn("[Cubix Queue] Could not save removal:", tostring(saveErr or saved))
+						pcall(function() Rayfield:Notify({Title="File Queue", Content="Removed, but failed to save. Check console.", Duration=5}) end)
+					else
+						print("[Cubix Queue] Removed:", tostring(removed.filename), "| Remaining:", #fileQueue)
+					end
+				end)
 			end
 		end
 		if queueViewerCount then
