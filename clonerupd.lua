@@ -2956,7 +2956,7 @@ local function loadMain()
 
 		TradeTab:CreateToggle({
 			Name = "Disable Trade Popups",
-			CurrentValue = true,
+			CurrentValue = false,
 			Flag = "CubixDisableTradePopups",
 			Callback = setPopupDisabled,
 		})
