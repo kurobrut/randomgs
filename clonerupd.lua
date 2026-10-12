@@ -1,5 +1,3 @@
-
-
 if not game:IsLoaded() then
 	game.Loaded:Wait()
 end
@@ -1849,7 +1847,7 @@ local function loadMain()
 				count += 1
 				print("[Cubix History]", id, record.name, record.source, record.timestamp)
 			end
-			Rayfield:Notify({Title="Completed History", Content=tostring(count) .. " completed house ID(s). Details in console.", Duration=5})
+			Rayfield:Notify({Title = "Completed History", Content = tostring(count) .. " completed house ID(s). Details in console.", Duration = 5})
 		end,
 	})
 
@@ -2013,24 +2011,30 @@ local function loadMain()
 		if not ok or type(interior) ~= "table" or tostring(interior.house_id) ~= tostring(houseId) then
 			return false, "Correct target interior is not ready"
 		end
-		local count, cost = 0, 0
-		local unavailable = {}
+		local count, cost, skipped = 0, 0, 0
 		for _, item in pairs(houseData.furniture) do
-			if type(item) ~= "table" or not item.id then return false, "Invalid furniture record" end
-			if item.id ~= "lures_2023_cozy_home_lure" then
+			if type(item) ~= "table" or not item.id then
+				skipped += 1
+			elseif item.id ~= "lures_2023_cozy_home_lure" then
 				local db = furnituresdb[item.id]
 				if not db or db.off_sale or type(db.cost) ~= "number" then
-					table.insert(unavailable, tostring(item.id))
+					skipped += 1
 				else
-					count += 1
-					cost += db.cost
+					local validCf = typeof(item.cframe) == "CFrame"
+					if not validCf and type(item.cframe) == "table" then
+						local cfOk, cf = pcall(function() return CFrame.new(table.unpack(item.cframe)) end)
+						validCf = cfOk and typeof(cf) == "CFrame"
+					end
+					if validCf then
+						count += 1
+						cost += db.cost
+					else
+						skipped += 1
+					end
 				end
 			end
 		end
-		if #unavailable > 0 then
-			return false, tostring(#unavailable) .. " furniture kinds unavailable (e.g. " .. unavailable[1] .. ")"
-		end
-		if count == 0 then return false, "No valid furniture to paste" end
+		if count == 0 then return false, "No available furniture with valid positions to paste (skipped " .. skipped .. ")" end
 		local moneyOk, data = pcall(function() return cd.get_data()[plr.Name] end)
 		local money = moneyOk and type(data) == "table" and tonumber(data.money) or nil
 		if not money then return false, "Could not verify your current money" end
@@ -2044,8 +2048,7 @@ local function loadMain()
 			end
 		end
 		if money < cost then return false, "Insufficient money: need $" .. cost .. ", have $" .. money end
-		
-		return true, "Preflight passed: " .. count .. " furniture; estimated $" .. cost
+		return true, "Preflight passed: " .. count .. " available furniture; skipped " .. skipped .. "; estimated $" .. cost
 	end
 
 	local function pasteIntoHouse(houseId, houseName, houseData, mode, expectedType)
@@ -2864,82 +2867,106 @@ local function loadMain()
 
 	do
 		local gui = plr:WaitForChild("PlayerGui")
-		local enabled = true
-		local dialogConnection
-		local addedConnection
-		local currentDialog
-		local originalVisible
+		local enabled = false
+		local records = setmetatable({}, { __mode = "k" })
+		local connections = {}
+		local trackedDialog
+		local generation = 0
+		local properties = {
+			"BackgroundTransparency", "TextTransparency", "TextStrokeTransparency",
+			"ImageTransparency", "ScrollBarImageTransparency", "Transparency",
+			"GroupTransparency"
+		}
 
-		local function clearDialog()
-			if dialogConnection then
-				dialogConnection:Disconnect()
-				dialogConnection = nil
+		local function disconnectAll()
+			for _, connection in ipairs(connections) do
+				pcall(function() connection:Disconnect() end)
 			end
-			if currentDialog and currentDialog.Parent and originalVisible ~= nil then
-				pcall(function() currentDialog.Visible = originalVisible end)
-			end
-			currentDialog = nil
-			originalVisible = nil
+			table.clear(connections)
 		end
 
-		local function bindDialog()
+		local function maskObject(object)
+			if records[object] then return end
+			local saved = {}
+			for _, property in ipairs(properties) do
+				local ok, value = pcall(function() return object[property] end)
+				if ok and type(value) == "number" then
+					saved[property] = value
+					pcall(function() object[property] = 1 end)
+				end
+			end
+			if object:IsA("GuiObject") then
+				local ok, value = pcall(function() return object.Interactable end)
+				if ok then
+					saved.Interactable = value
+					pcall(function() object.Interactable = false end)
+				end
+			end
+			if next(saved) then records[object] = saved end
+		end
+
+		local function restoreAll()
+			for object, saved in pairs(records) do
+				if object.Parent then
+					for property, value in pairs(saved) do
+						pcall(function() object[property] = value end)
+					end
+				end
+				records[object] = nil
+			end
+		end
+
+		local function attachDialog()
 			if not enabled then return end
 			local app = gui:FindFirstChild("DialogApp")
 			local dialog = app and app:FindFirstChild("Dialog")
 			if not dialog or not dialog:IsA("GuiObject") then return end
-			if currentDialog == dialog then
-				if dialog.Visible then dialog.Visible = false end
-				return
-			end
-			clearDialog()
-			currentDialog = dialog
-			originalVisible = dialog.Visible
-			dialogConnection = dialog:GetPropertyChangedSignal("Visible"):Connect(function()
-				if enabled and dialog.Visible then dialog.Visible = false end
-			end)
-			dialog.Visible = false
+			if dialog == trackedDialog then return end
+			trackedDialog = dialog
+			maskObject(dialog)
+			for _, item in ipairs(dialog:GetDescendants()) do maskObject(item) end
+			local token = generation
+			table.insert(connections, dialog.DescendantAdded:Connect(function(item)
+				if enabled and generation == token then maskObject(item) end
+			end))
 		end
 
-		local function stopPopupHiding()
-			enabled = false
-			if addedConnection then addedConnection:Disconnect(); addedConnection = nil end
-			clearDialog()
+		local function setPopupDisabled(value)
+			local nextValue = value == true
+			if enabled == nextValue then return end
+			enabled = nextValue
+			generation += 1
+			disconnectAll()
+			restoreAll()
+			trackedDialog = nil
+			if enabled then
+				table.insert(connections, gui.DescendantAdded:Connect(function(item)
+					if item.Name == "DialogApp" or item.Name == "Dialog" then
+						local token = generation
+						task.defer(function()
+							if enabled and generation == token then attachDialog() end
+						end)
+					end
+				end))
+				attachDialog()
+			end
 		end
 
 		local env = (getgenv and getgenv()) or _G
 		if type(env.__CubixStopTradePopupHiding) == "function" then
 			pcall(env.__CubixStopTradePopupHiding)
 		end
-		env.__CubixStopTradePopupHiding = stopPopupHiding
+		env.__CubixStopTradePopupHiding = function()
+			setPopupDisabled(false)
+		end
 
 		TradeTab:CreateToggle({
 			Name = "Disable Trade Popups",
 			CurrentValue = true,
 			Flag = "CubixDisableTradePopups",
-			Callback = function(value)
-				if value == true then
-					enabled = true
-					bindDialog()
-					if not addedConnection then
-						addedConnection = gui.DescendantAdded:Connect(function(obj)
-							if obj.Name == "Dialog" or obj.Name == "DialogApp" then
-								task.defer(bindDialog)
-							end
-						end)
-					end
-				else
-					stopPopupHiding()
-				end
-			end,
+			Callback = setPopupDisabled,
 		})
-		bindDialog()
-		if not addedConnection then
-			addedConnection = gui.DescendantAdded:Connect(function(obj)
-				if obj.Name == "Dialog" or obj.Name == "DialogApp" then
-					task.defer(bindDialog)
-				end
-			end)
-		end
+		setPopupDisabled(true)
 	end
 
 	tradeDropdown = TradeTab:CreateDropdown({
@@ -3355,30 +3382,6 @@ local function loadMain()
 		return c
 	end
 
-	local function getCurrentInteriorModel()
-		for _, v in pairs(workspace:GetChildren()) do
-			if v.Name:lower():find("interior") and v:IsA("Model") and v.PrimaryPart then
-				return v
-			end
-		end
-		return nil
-	end
-
-	local function _toRelativeCFrame(worldCf)
-		local interior = getCurrentInteriorModel()
-		if interior and interior.PrimaryPart then
-			return interior.PrimaryPart.CFrame:ToObjectSpace(worldCf)
-		end
-		return worldCf
-	end
-
-	local function _toWorldCFrame(relativeCf)
-		local interior = getCurrentInteriorModel()
-		if interior and interior.PrimaryPart then
-			return interior.PrimaryPart.CFrame:ToWorldSpace(relativeCf)
-		end
-		return relativeCf
-	end
 
 	local function deepCopy(tbl)
 		if type(tbl) ~= "table" then return tbl end
@@ -3437,10 +3440,10 @@ local function loadMain()
 		local success, player_data = pcall(function()
 			return cd.get_data()[plr.Name]
 		end)
-		if not success or not player_data then
-			return false, false
+		if not success or not player_data or tonumber(player_data.money) == nil then
+			return false, true
 		end
-		return db_entry.cost <= (player_data.money or 0), true
+		return db_entry.cost <= tonumber(player_data.money), true
 	end
 
 	local function getPlayerMoney()
