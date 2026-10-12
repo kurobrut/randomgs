@@ -1,3 +1,5 @@
+
+
 if not game:IsLoaded() then
 	game.Loaded:Wait()
 end
@@ -24,10 +26,6 @@ while not plr do
 	plr = Players.LocalPlayer
 end
 
-
---// DEFAULT TRADE LICENSE HOTBAR
--- Places the Trade License in hotbar slot 1 only when it is not already
--- present in any hotbar/tool-slot data exposed by ClientData.
 local TRADE_LICENSE_SLOT = 1
 
 local function tableContainsTradeLicense(value, depth, seen)
@@ -67,8 +65,7 @@ local function tableContainsTradeLicense(value, depth, seen)
 end
 
 local function tradeLicenseAlreadyInHotbar()
-	-- Adopt Me has changed its client data naming over time, so check the
-	-- common hotbar/tool-slot containers without assuming only one layout.
+
 	local candidateKeys = {
 		"tool_slots",
 		"tool_slot_properties",
@@ -150,11 +147,11 @@ local function loadMain()
 		LoadingSubtitle = "House Cloner",
 		Theme = "Amethyst",
 		ConfigurationSaving = {
-			Enabled = true,
+			Enabled = type(writefile) == "function" and type(readfile) == "function" and type(isfolder) == "function",
 			FileName = "CubixAutoPasteV3",
 		},
 		Discord = {
-			Enabled = true,
+			Enabled = false,
 			Invite = "VVsxaBNakm",
 			RememberJoins = false,
 		},
@@ -202,11 +199,6 @@ local function loadMain()
 	local scanInfoValues = { 0, 0, 0, 0, "No", "-" }
 
 	local function getScanInfoParent()
-		local success, hui = pcall(function()
-			return gethui and gethui()
-		end)
-		if success and hui then return hui end
-
 		return plr:WaitForChild("PlayerGui")
 	end
 
@@ -486,6 +478,7 @@ local function loadMain()
 	local autoAcceptToggle
 	local PlayerDropdown
 	local getPlayers
+	local skipCompletedHouses = true
 	local autoPasteMode = "fast"
 	local autoPasteSource = "loaded"
 
@@ -495,12 +488,17 @@ local function loadMain()
 		changing = false,
 		autoSelected = {},
 	}
-	-- Every successfully pasted target house is remembered by house_id.
+	
 	local fileQueue = {}
 	local fqAllFiles = {}
 	local fqSearchQuery = ""
 	local fqFileDropdown
 	local fqQueueListLabel
+	local queueViewerGui
+	local queueViewerList
+	local queueViewerCount
+	local queueViewerSearch = ""
+	local refreshQueueViewer
 	local autoPasteFileInfo
 	local autoPasteQueueCostLabel
 	local autoPasteStatus
@@ -517,6 +515,51 @@ local function loadMain()
 	local houseFilesPath = houseFSPath .. "/Houses"
 	local autoPasteConfigPath = houseSettingsPath .. "/autopaste.json"
 
+	local queueDataFolder = houseSettingsPath .. "/queue_data"
+	local pasteHistoryPath = houseSettingsPath .. "/paste_history.json"
+	local pasteCheckpointPath = houseSettingsPath .. "/paste_checkpoint.json"
+	local pasteHistory = {}
+	local pasteCheckpoint = nil
+	local function safeWriteJSON(path, value)
+		local ok, err = pcall(function() writefile(path, HttpService:JSONEncode(value)) end)
+		return ok, err
+	end
+	local function safeReadJSON(path)
+		local ok, result = pcall(function()
+			if not isfile(path) then return nil end
+			return HttpService:JSONDecode(readfile(path))
+		end)
+		if ok and type(result) == "table" then return result end
+		return nil
+	end
+	local function persistCheckpoint(value)
+		pasteCheckpoint = value
+		return safeWriteJSON(pasteCheckpointPath, value or { state = "idle" })
+	end
+	local function saveHistory()
+		return safeWriteJSON(pasteHistoryPath, pasteHistory)
+	end
+	local function recordPasteSuccess(houseId, houseName, sourceName)
+		pasteHistory[tostring(houseId)] = {
+			house_id = tostring(houseId), name = tostring(houseName),
+			source = tostring(sourceName or "Loaded House"), timestamp = os.time()
+		}
+		saveHistory()
+		persistCheckpoint(nil)
+	end
+	local function countFurniture(houseData)
+		local n = 0
+		for _ in pairs((houseData and houseData.furniture) or {}) do n += 1 end
+		return n
+	end
+	local function queueDataPath(id)
+		return queueDataFolder .. "/" .. tostring(id) .. ".json"
+	end
+	local function ensureQueueEntryId(entry)
+		if not entry.queueId then entry.queueId = HttpService:GenerateGUID(false) end
+		return entry.queueId
+	end
+
 	pcall(function()
 		if not isfolder(houseFSPath) then
 			makefolder(houseFSPath)
@@ -529,6 +572,7 @@ local function loadMain()
 		if not isfolder(houseFilesPath) then
 			makefolder(houseFilesPath)
 		end
+		if not isfolder(queueDataFolder) then makefolder(queueDataFolder) end
 	end)
 
 	local function deserializeFileValue(value, context)
@@ -787,8 +831,6 @@ local function loadMain()
 		return fallbackId
 	end
 
-	-- Queue cost is expensive for large house files. House data is immutable while
-	-- queued, so cache the result by houseData table instead of rescanning every item.
 	local queueHouseCostCache = setmetatable({}, { __mode = "k" })
 
 	local function getQueueHouseCost(houseData)
@@ -844,28 +886,188 @@ local function loadMain()
 		end
 	end
 
-	local function setAutoPasteSource(source)
+	local updatingPasteSourceUI = false
+	local function setAutoPasteSource(source, fromDropdown)
+		source = source == "filequeue" and "filequeue" or "loaded"
+		local changed = autoPasteSource ~= source
 		autoPasteSource = source
-		if autoPasteSourceDropdown then
-			pcall(function()
-				autoPasteSourceDropdown:Set(source == "filequeue" and "File Queue" or "Loaded House")
-			end)
+		if fromDropdown or updatingPasteSourceUI or not autoPasteSourceDropdown then
+			return changed
 		end
+		local desired = source == "filequeue" and "File Queue" or "Loaded House"
+		local current = autoPasteSourceDropdown.CurrentOption
+		if type(current) == "table" then current = current[1] end
+		if current ~= desired then
+			updatingPasteSourceUI = true
+			local ok, err = pcall(function()
+				autoPasteSourceDropdown:Set(desired)
+			end)
+			updatingPasteSourceUI = false
+			if not ok then warn("[Cubix] Paste Source UI sync failed:", err) end
+		end
+		return changed
 	end
 
 	local function rebuildQueueLabel()
-		if not fqQueueListLabel then return end
-		if #fileQueue == 0 then
-			pcall(function() fqQueueListLabel:Set("Queue: (empty)") end)
-			return
+		if fqQueueListLabel then
+			local count = #fileQueue
+			local nextEntry = fileQueue[1]
+			local preview = nextEntry and tostring(nextEntry.filename or "Unknown") or "(empty)"
+			if #preview > 35 then preview = preview:sub(1, 32) .. "..." end
+			pcall(function()
+				fqQueueListLabel:Set(string.format("Queue: %d file(s) | Next: %s", count, preview))
+			end)
 		end
+		if refreshQueueViewer then refreshQueueViewer() end
+	end
 
-		local lines = {}
-		for i, entry in ipairs(fileQueue) do
-			local cost = getQueueHouseCost(entry.houseData)
-			table.insert(lines, i .. ". " .. entry.filename .. " [" .. getFileHouseType(entry.houseData) .. "] ($" .. cost .. ")")
+	local function createQueueViewer()
+		if queueViewerGui and queueViewerGui.Parent then return end
+		local parent = plr:WaitForChild("PlayerGui")
+		local old = parent:FindFirstChild("CubixQueueViewer")
+		if old then old:Destroy() end
+		local gui = Instance.new("ScreenGui")
+		gui.Name = "CubixQueueViewer"
+		gui.ResetOnSpawn = false
+		gui.IgnoreGuiInset = true
+		gui.DisplayOrder = 30
+		gui.Enabled = false
+		gui.Parent = parent
+		queueViewerGui = gui
+
+		local overlay = Instance.new("Frame")
+		overlay.Name = "Window"
+		overlay.AnchorPoint = Vector2.new(0.5, 0.5)
+		overlay.Position = UDim2.fromScale(0.5, 0.5)
+		overlay.Size = UDim2.new(0.94, 0, 0.84, 0)
+		overlay.BackgroundColor3 = Color3.fromRGB(25, 23, 36)
+		overlay.BorderSizePixel = 0
+		overlay.Parent = gui
+		local maxSize = Instance.new("UISizeConstraint")
+		maxSize.MaxSize = Vector2.new(440, 470)
+		maxSize.MinSize = Vector2.new(240, 210)
+		maxSize.Parent = overlay
+		local corner = Instance.new("UICorner")
+		corner.CornerRadius = UDim.new(0, 12)
+		corner.Parent = overlay
+
+		local title = Instance.new("TextLabel")
+		title.Size = UDim2.new(1, -74, 0, 38)
+		title.Position = UDim2.fromOffset(16, 7)
+		title.BackgroundTransparency = 1
+		title.Text = "Cubix  •  File Queue"
+		title.Font = Enum.Font.GothamBold
+		title.TextColor3 = Color3.fromRGB(247, 241, 255)
+		title.TextSize = 18
+		title.TextXAlignment = Enum.TextXAlignment.Left
+		title.Parent = overlay
+
+		local close = Instance.new("TextButton")
+		close.Size = UDim2.fromOffset(32, 32)
+		close.Position = UDim2.new(1, -43, 0, 10)
+		close.Text = "×"
+		close.Font = Enum.Font.GothamBold
+		close.TextSize = 24
+		close.TextColor3 = Color3.new(1, 1, 1)
+		close.BackgroundColor3 = Color3.fromRGB(69, 53, 85)
+		close.Parent = overlay
+		Instance.new("UICorner", close).CornerRadius = UDim.new(0, 8)
+		close.MouseButton1Click:Connect(function() gui.Enabled = false end)
+
+		local search = Instance.new("TextBox")
+		search.Name = "Search"
+		search.Size = UDim2.new(1, -32, 0, 36)
+		search.Position = UDim2.fromOffset(16, 54)
+		search.BackgroundColor3 = Color3.fromRGB(43, 39, 58)
+		search.TextColor3 = Color3.new(1, 1, 1)
+		search.PlaceholderColor3 = Color3.fromRGB(160, 153, 177)
+		search.PlaceholderText = "Search queued files..."
+		search.Text = queueViewerSearch
+		search.TextSize = 14
+		search.Font = Enum.Font.Gotham
+		search.ClearTextOnFocus = false
+		search.Parent = overlay
+		Instance.new("UICorner", search).CornerRadius = UDim.new(0, 8)
+
+		local count = Instance.new("TextLabel")
+		count.Position = UDim2.fromOffset(16, 96)
+		count.Size = UDim2.new(1, -32, 0, 25)
+		count.BackgroundTransparency = 1
+		count.TextColor3 = Color3.fromRGB(185, 178, 204)
+		count.TextXAlignment = Enum.TextXAlignment.Left
+		count.Font = Enum.Font.Gotham
+		count.TextSize = 12
+		count.Parent = overlay
+		queueViewerCount = count
+
+		local scroller = Instance.new("ScrollingFrame")
+		scroller.Name = "Items"
+		scroller.Position = UDim2.fromOffset(16, 126)
+		scroller.Size = UDim2.new(1, -32, 1, -142)
+		scroller.BackgroundTransparency = 1
+		scroller.BorderSizePixel = 0
+		scroller.ScrollBarThickness = 5
+		scroller.ScrollBarImageColor3 = Color3.fromRGB(158, 119, 207)
+		scroller.AutomaticCanvasSize = Enum.AutomaticSize.Y
+		scroller.CanvasSize = UDim2.fromOffset(0, 0)
+		scroller.Parent = overlay
+		queueViewerList = scroller
+		local layout = Instance.new("UIListLayout")
+		layout.SortOrder = Enum.SortOrder.LayoutOrder
+		layout.Padding = UDim.new(0, 6)
+		layout.Parent = scroller
+		search:GetPropertyChangedSignal("Text"):Connect(function()
+			queueViewerSearch = search.Text
+			if refreshQueueViewer then refreshQueueViewer() end
+		end)
+	end
+
+	refreshQueueViewer = function()
+		if not queueViewerGui or not queueViewerGui.Parent or not queueViewerGui.Enabled then return end
+		if not queueViewerList then return end
+		for _, child in ipairs(queueViewerList:GetChildren()) do
+			if child:IsA("Frame") then child:Destroy() end
 		end
-		pcall(function() fqQueueListLabel:Set("Queue:\n" .. table.concat(lines, "\n")) end)
+		local filter = string.lower(queueViewerSearch)
+		local shown = 0
+		for index, entry in ipairs(fileQueue) do
+			local filename = tostring(entry.filename or "Unknown")
+			if filter == "" or string.find(string.lower(filename), filter, 1, true) then
+				shown += 1
+				local row = Instance.new("Frame")
+				row.LayoutOrder = index
+				row.Size = UDim2.new(1, -7, 0, 52)
+				row.BackgroundColor3 = Color3.fromRGB(42, 37, 57)
+				row.BorderSizePixel = 0
+				row.Parent = queueViewerList
+				Instance.new("UICorner", row).CornerRadius = UDim.new(0, 7)
+				local nameLabel = Instance.new("TextLabel")
+				nameLabel.Position = UDim2.fromOffset(10, 4)
+				nameLabel.Size = UDim2.new(1, -20, 0, 23)
+				nameLabel.BackgroundTransparency = 1
+				nameLabel.TextXAlignment = Enum.TextXAlignment.Left
+				nameLabel.TextTruncate = Enum.TextTruncate.AtEnd
+				nameLabel.Text = string.format("%d. %s", index, filename)
+				nameLabel.TextColor3 = Color3.fromRGB(250, 247, 255)
+				nameLabel.Font = Enum.Font.GothamBold
+				nameLabel.TextSize = 13
+				nameLabel.Parent = row
+				local info = Instance.new("TextLabel")
+				info.Position = UDim2.fromOffset(10, 27)
+				info.Size = UDim2.new(1, -20, 0, 18)
+				info.BackgroundTransparency = 1
+				info.TextXAlignment = Enum.TextXAlignment.Left
+				info.TextTruncate = Enum.TextTruncate.AtEnd
+				info.Text = tostring(getFileHouseType(entry.houseData)) .. "  •  $" .. tostring(getQueueHouseCost(entry.houseData))
+				info.TextColor3 = Color3.fromRGB(189, 177, 213)
+				info.Font = Enum.Font.Gotham
+				info.TextSize = 11
+				info.Parent = row
+			end
+		end
+		if queueViewerCount then
+			queueViewerCount.Text = string.format("%d shown  •  %d queued  •  scroll to browse", shown, #fileQueue)
+		end
 	end
 
 	local function removeCompletedQueueEntry(entry, expectedIndex)
@@ -873,12 +1075,10 @@ local function loadMain()
 
 		local removeIndex = nil
 
-		-- Fast/most reliable path: remove the exact slot the queue loop is processing.
 		if expectedIndex and fileQueue[expectedIndex] == entry then
 			removeIndex = expectedIndex
 		end
 
-		-- Exact table identity fallback.
 		if not removeIndex then
 			for i, queuedEntry in ipairs(fileQueue) do
 				if queuedEntry == entry then
@@ -888,7 +1088,6 @@ local function loadMain()
 			end
 		end
 
-		-- Last fallback for a queue object recreated by config loading.
 		if not removeIndex then
 			for i, queuedEntry in ipairs(fileQueue) do
 				if tostring(queuedEntry.filename or "") == tostring(entry.filename or "")
@@ -906,12 +1105,9 @@ local function loadMain()
 
 		local removed = table.remove(fileQueue, removeIndex)
 
-		-- Update BOTH queue UIs immediately.
 		rebuildQueueLabel()
 		setAPFileInfo()
 
-		-- Persist synchronously. Because saveAutoPasteConfig is forward-declared,
-		-- this always calls the local save function rather than a nil/global value.
 		if type(saveAutoPasteConfig) == "function" then
 			local ok, saved, err = pcall(saveAutoPasteConfig)
 			if not ok or not saved then
@@ -1041,16 +1237,36 @@ local function loadMain()
 			end
 		end
 
-
+		local slimQueue = {}
+		local sourceIds = {}
+		for _, entry in ipairs(fileQueue) do
+			local id = ensureQueueEntryId(entry)
+			local sourceId = sourceIds[entry.houseData] or entry.dataId
+			if not sourceId then
+				sourceId = id
+				sourceIds[entry.houseData] = sourceId
+			end
+			entry.dataId = sourceId
+			local dataPath = queueDataPath(sourceId)
+			if not isfile(dataPath) then
+				local serialized = serializeAutoPasteValue(entry.houseData)
+				local ok, err = safeWriteJSON(dataPath, serialized)
+				if not ok then return false, "Could not save queue data: " .. tostring(err) end
+			end
+			table.insert(slimQueue, {
+				queueId = id, dataId = sourceId,
+				filename = entry.filename, sourceName = entry.sourceName
+			})
+		end
 		local config = {
-			version = 3,
+			version = 4,
 			source = autoPasteSource,
 			pasteMode = autoPasteMode,
 			autoPasteKaliremEnabled = false,
 			queueCopies = autoPasteQueueCopies,
 			pastebinValue = autoPastePastebinValue,
 			targetHouseIds = targetIds,
-			queue = serializeAutoPasteValue(fileQueue),
+			queue = slimQueue,
 			autoAcceptPlayer = selectedPlayer,
 			autoAcceptEnabled = autoTradeEnabled,
 			autoBuyQueuedHouses = false,
@@ -1085,12 +1301,22 @@ local function loadMain()
 
 		table.clear(fileQueue)
 		for _, entry in ipairs(config.queue or {}) do
-			if type(entry) == "table" and type(entry.houseData) == "table" then
-				table.insert(fileQueue, {
-					filename = tostring(entry.filename or entry.sourceName or "Queued House"),
-					sourceName = tostring(entry.sourceName or entry.filename or "Queued House"),
-					houseData = deserializeFileValue(entry.houseData),
-				})
+			if type(entry) == "table" then
+				local houseData = entry.houseData
+				if not houseData and entry.dataId then
+					houseData = safeReadJSON(queueDataPath(entry.dataId))
+				end
+				if type(houseData) == "table" then
+					table.insert(fileQueue, {
+						queueId = entry.queueId,
+						dataId = entry.dataId,
+						filename = tostring(entry.filename or entry.sourceName or "Queued House"),
+						sourceName = tostring(entry.sourceName or entry.filename or "Queued House"),
+						houseData = deserializeFileValue(houseData),
+					})
+				else
+					warn("[Cubix] Queue source data is missing: " .. tostring(entry.filename))
+				end
 			end
 		end
 
@@ -1211,9 +1437,10 @@ local function loadMain()
 		MultipleOptions = false,
 		Flag = "AutoPasteSource",
 		Callback = function(opt)
+			if updatingPasteSourceUI then return end
 			local v = (typeof(opt) == "table") and opt[1] or opt
-			setAutoPasteSource(v == "File Queue" and "filequeue" or "loaded")
-			autoSaveAutoPasteConfig()
+			local changed = setAutoPasteSource(v == "File Queue" and "filequeue" or "loaded", true)
+			if changed then autoSaveAutoPasteConfig() end
 		end,
 	})
 
@@ -1323,7 +1550,21 @@ local function loadMain()
 		end,
 	})
 
-	fqQueueListLabel = AutoPasteTab:CreateLabel("Queue: (empty)", "list")
+	fqQueueListLabel = AutoPasteTab:CreateLabel("Queue: 0 file(s) | Next: (empty)", "list")
+	AutoPasteTab:CreateButton({
+		Name = "View Queue (Scrollable)",
+		Callback = function()
+			local ok, err = pcall(createQueueViewer)
+			if not ok or not queueViewerGui then
+				warn("[Cubix Queue] Custom window unavailable: " .. tostring(err))
+				pcall(function() Rayfield:Notify({Title="Queue Viewer", Content="Executor denied custom GUI access. Queue still works.", Duration=5}) end)
+				return
+			end
+			queueViewerGui.Enabled = true
+			refreshQueueViewer()
+		end,
+	})
+	rebuildQueueLabel()
 
 	AutoPasteTab:CreateInput({
 		Name = "Pastebin Link / ID",
@@ -1411,9 +1652,6 @@ local function loadMain()
 
 	AutoPasteTab:CreateSection("Target Houses")
 
-	-- Only touch the Rayfield multi-select when the selected set really changed.
-	-- Refreshing/setting a 30+ item multi-select repeatedly is one of the biggest
-	-- frame spikes when Auto Paste Kalirem is enabled.
 	function kaliremAP.refreshDropdown()
 		if not autoPasteDropdown then return end
 		autoPasteApplyingSavedTargets = true
@@ -1441,7 +1679,6 @@ local function loadMain()
 				if string.lower(houseName):match("^%s*kalirem") then
 					available += 1
 
-					-- Keep the lightweight maps current without rebuilding every dropdown.
 					local label = ownedHouseLabelById[houseId]
 						or (houseName ~= "" and houseName)
 						or ("Kalirem [" .. key .. "]")
@@ -1465,8 +1702,6 @@ local function loadMain()
 			kaliremAP.refreshDropdown()
 		end
 
-		-- Auto-selected Kalirem targets are temporary. Do not serialize the whole
-		-- 30+ house fileQueue just because the detector found the same houses again.
 		return added, available, changed
 	end
 
@@ -1485,8 +1720,7 @@ local function loadMain()
 		if changed then
 			kaliremAP.refreshDropdown()
 		end
-		-- No config save here: automatic Kalirem selections are intentionally
-		-- rediscovered each session and should not force a huge queue serialization.
+
 	end
 
 	function kaliremAP.setToggle(value, silent)
@@ -1505,7 +1739,7 @@ local function loadMain()
 
 		local added = 0
 		if value then
-			-- One lightweight scan on enable. No full owned-house refresh/config save.
+			
 			added = kaliremAP.selectAvailable(true)
 		else
 			kaliremAP.removeAutomatic()
@@ -1564,21 +1798,13 @@ local function loadMain()
 		end,
 	})
 
-	-- No automatic house/Kalirem refresh loop.
-	-- The owned-house list and Kalirem targets are refreshed only when the
-	-- user presses the manual "Refresh House List" button below.
-
 	AutoPasteTab:CreateButton({
 		Name = "Refresh House List",
 		Callback = function()
-			-- Manual-only refresh. This is the ONLY place that refreshes the
-			-- owned-house dropdown for Auto Paste during normal use.
+
 			refreshOwnedHouses()
 			restorePendingAutoPasteTargets(true)
 
-			-- If Auto Paste Kalirem is enabled, update Kalirem targets now too.
-			-- Do not save the full queue here; that was a major source of lag
-			-- with 30+ queued house files.
 			local added = 0
 			if kaliremAP.enabled then
 				added = kaliremAP.selectAvailable(true)
@@ -1608,7 +1834,24 @@ local function loadMain()
 		end,
 	})
 
+	AutoPasteTab:CreateToggle({
+		Name = "Skip Previously Completed Houses",
+		CurrentValue = true,
+		Flag = "CubixSkipCompleted",
+		Callback = function(value) skipCompletedHouses = value == true end,
+	})
 	AutoPasteTab:CreateSection("Controls")
+	AutoPasteTab:CreateButton({
+		Name = "View Completed House History",
+		Callback = function()
+			local count = 0
+			for id, record in pairs(pasteHistory) do
+				count += 1
+				print("[Cubix History]", id, record.name, record.source, record.timestamp)
+			end
+			Rayfield:Notify({Title="Completed History", Content=tostring(count) .. " completed house ID(s). Details in console.", Duration=5})
+		end,
+	})
 
 	autoPasteStatus = AutoPasteTab:CreateLabel("Status: Idle", "activity")
 	autoPasteProgress = AutoPasteTab:CreateLabel("Progress: -", "trending-up")
@@ -1623,7 +1866,7 @@ local function loadMain()
 		local start = tick()
 		while tick() - start < timeout do
 			local ok, interior = pcall(function() return cd.get("house_interior") end)
-			if ok and interior and interior.house_id == targetId then
+			if ok and interior and tostring(interior.house_id) == tostring(targetId) then
 				return true
 			end
 			task.wait(0.5)
@@ -1642,6 +1885,10 @@ local function loadMain()
 
 	function kaliremAP.loadHouseBeforeEntering(houseId, houseName, safetyCheck)
 		local maxAttempts = 3
+		local readOk, interior = pcall(function() return cd.get("house_interior") end)
+		if readOk and interior and tostring(interior.house_id) == tostring(houseId) then
+			return true 
+		end
 
 		for attempt = 1, maxAttempts do
 			if stopFlag or not autoPasteRunning then
@@ -1758,6 +2005,49 @@ local function loadMain()
 		return getInteriorExactType(interior)
 	end
 
+	local function preflightHousePaste(houseId, houseData)
+		if type(houseData) ~= "table" or type(houseData.furniture) ~= "table" then
+			return false, "Invalid source house data"
+		end
+		local ok, interior = pcall(function() return cd.get("house_interior") end)
+		if not ok or type(interior) ~= "table" or tostring(interior.house_id) ~= tostring(houseId) then
+			return false, "Correct target interior is not ready"
+		end
+		local count, cost = 0, 0
+		local unavailable = {}
+		for _, item in pairs(houseData.furniture) do
+			if type(item) ~= "table" or not item.id then return false, "Invalid furniture record" end
+			if item.id ~= "lures_2023_cozy_home_lure" then
+				local db = furnituresdb[item.id]
+				if not db or db.off_sale or type(db.cost) ~= "number" then
+					table.insert(unavailable, tostring(item.id))
+				else
+					count += 1
+					cost += db.cost
+				end
+			end
+		end
+		if #unavailable > 0 then
+			return false, tostring(#unavailable) .. " furniture kinds unavailable (e.g. " .. unavailable[1] .. ")"
+		end
+		if count == 0 then return false, "No valid furniture to paste" end
+		local moneyOk, data = pcall(function() return cd.get_data()[plr.Name] end)
+		local money = moneyOk and type(data) == "table" and tonumber(data.money) or nil
+		if not money then return false, "Could not verify your current money" end
+		for _, texture in pairs(houseData.textures or {}) do
+			for _, key in ipairs({"walls", "floors"}) do
+				if texture[key] and texture[key] ~= "tile" then
+					local db = texturesdb[key] and texturesdb[key][texture[key]]
+					if not db then return false, "Unavailable texture: " .. tostring(texture[key]) end
+					if Pastetextures and Pastetextures.CurrentValue then cost += tonumber(db.cost) or 0 end
+				end
+			end
+		end
+		if money < cost then return false, "Insufficient money: need $" .. cost .. ", have $" .. money end
+		
+		return true, "Preflight passed: " .. count .. " furniture; estimated $" .. cost
+	end
+
 	local function pasteIntoHouse(houseId, houseName, houseData, mode, expectedType)
 		local mutationStarted = false
 		local safetyStopped = false
@@ -1806,7 +2096,12 @@ local function loadMain()
 
 		if not checkTargetName() then return false end
 
-		local loaded, loadErr = kaliremAP.loadHouseBeforeEntering(houseId, houseName, checkTargetName)
+		local readOk, existingInterior = pcall(function() return cd.get("house_interior") end)
+		local alreadyInside = readOk and existingInterior and tostring(existingInterior.house_id) == tostring(houseId)
+		local loaded, loadErr = true, nil
+		if not alreadyInside then
+			loaded, loadErr = kaliremAP.loadHouseBeforeEntering(houseId, houseName, checkTargetName)
+		end
 		if not loaded then
 			Rayfield:Notify({
 				Title = "Auto Paste",
@@ -1826,9 +2121,9 @@ local function loadMain()
 		setAPStatus("Entering house")
 		Rayfield:Notify({ Title = "Auto Paste", Content = "Entering loaded house: " .. houseName, Duration = 3 })
 
-		local inside = false
+		local inside = alreadyInside == true
 		local lastEnterErr = nil
-		for enterAttempt = 1, 3 do
+		for enterAttempt = 1, (alreadyInside and 0 or 3) do
 			if stopFlag or not autoPasteRunning or not checkTargetName() then break end
 
 			local enterOk, enterErr = teleportToHouse(houseId)
@@ -1886,6 +2181,26 @@ local function loadMain()
 			return false
 		end
 
+		local safe, safeReason = preflightHousePaste(houseId, houseData)
+		if not safe then
+			setAPStatus("Preflight blocked")
+			Rayfield:Notify({ Title = "Pre-Paste Safety Check", Content = safeReason .. "\nHouse unchanged; queue kept.", Duration = 8 })
+			exitCurrentHouse()
+			return false
+		end
+
+		local checkpoint = pasteCheckpoint
+		if checkpoint and checkpoint.state ~= "idle" and tostring(checkpoint.house_id) == tostring(houseId) then
+			local okCount, current = pcall(function() return cd.get("house_interior") end)
+			if not okCount or not current then return false end
+			local currentCount = countFurniture(current)
+			if currentCount > 0 then
+				Rayfield:Notify({ Title = "Resume Requires Review", Content = "Interrupted clear/paste detected in " .. houseName .. ". Not clearing or replaying to avoid duplicates. Inspect the house first.", Duration = 9 })
+				exitCurrentHouse()
+				return false
+			end
+		end
+		persistCheckpoint({state = "clearing", house_id = tostring(houseId), house_name = houseName, started_at = os.time(), source_count = countFurniture(houseData)})
 		mutationStarted = true
 		local cleared, clearErr = clearCurrentHouseFurniture(15, checkTargetName)
 		if not cleared then
@@ -1898,6 +2213,7 @@ local function loadMain()
 			return false
 		end
 
+		persistCheckpoint({state = "pasting", house_id = tostring(houseId), house_name = houseName, started_at = os.time(), source_count = countFurniture(houseData)})
 		local monitoring = true
 		task.spawn(function()
 			while monitoring do
@@ -1926,14 +2242,13 @@ local function loadMain()
 			exitCurrentHouse()
 			return false
 		end
+		recordPasteSuccess(houseId, houseName, autoPasteSource == "filequeue" and "File Queue" or "Loaded House")
 		deselectAutoPasteTarget(houseId)
 		autoSaveAutoPasteConfig()
 
 		exitCurrentHouse()
 		task.wait(2)
 
-		-- Do not re-check the target after exit. The paste was already verified
-		-- successful, and a post-exit live-house check could falsely report failure.
 		return true
 	end
 
@@ -1947,7 +2262,7 @@ local function loadMain()
 
 		for id in pairs(autoPasteSelections) do
 			local key = tostring(id)
-			if not seen[key] then
+			if not seen[key] and not (skipCompletedHouses and pasteHistory[key]) then
 				seen[key] = true
 				table.insert(ids, id)
 			end
@@ -1962,7 +2277,7 @@ local function loadMain()
 			for _, house in pairs(manager) do
 				if type(house) == "table" and house.house_id ~= nil and kaliremAP.isName(house.name) then
 					local key = tostring(house.house_id)
-					if not seen[key] then
+					if not seen[key] and not (skipCompletedHouses and pasteHistory[key]) then
 						seen[key] = true
 						autoPasteSelections[house.house_id] = tostring(house.name or ("Kalirem [" .. key .. "]"))
 						table.insert(ids, house.house_id)
@@ -2049,8 +2364,6 @@ local function loadMain()
 			task.spawn(function()
 				setAPStatus("Running")
 
-				-- The queue UI does not need to be recomputed 4x/second. Queue mutations
-				-- already call setAPFileInfo(), so this is only a slow safety sync.
 				task.spawn(function()
 					while autoPasteRunning and not stopFlag do
 						task.wait(2)
@@ -2105,8 +2418,6 @@ local function loadMain()
 								progressIndex += 1
 								usedHouseIds[matchedId] = true
 
-								-- Consume the exact queue slot that just finished. Do NOT increment
-								-- fileIndex on success because the next item shifts into this slot.
 								local removedOk = removeCompletedQueueEntry(fileEntry, fileIndex)
 								if not removedOk then
 									warn("[Auto Paste] Paste succeeded but queue removal failed for " .. tostring(fileEntry.filename))
@@ -2129,7 +2440,7 @@ local function loadMain()
 
 				local wasStopped = stopFlag
 				autoPasteRunning = false
-				-- Final queue sync: completed files stay removed both in the UI and saved config.
+				
 				rebuildQueueLabel()
 				setAPFileInfo()
 				pcall(saveAutoPasteConfig)
@@ -2551,6 +2862,86 @@ local function loadMain()
 	local tradeSelections = {}
 	local lastTradeCount = -1
 
+	do
+		local gui = plr:WaitForChild("PlayerGui")
+		local enabled = true
+		local dialogConnection
+		local addedConnection
+		local currentDialog
+		local originalVisible
+
+		local function clearDialog()
+			if dialogConnection then
+				dialogConnection:Disconnect()
+				dialogConnection = nil
+			end
+			if currentDialog and currentDialog.Parent and originalVisible ~= nil then
+				pcall(function() currentDialog.Visible = originalVisible end)
+			end
+			currentDialog = nil
+			originalVisible = nil
+		end
+
+		local function bindDialog()
+			if not enabled then return end
+			local app = gui:FindFirstChild("DialogApp")
+			local dialog = app and app:FindFirstChild("Dialog")
+			if not dialog or not dialog:IsA("GuiObject") then return end
+			if currentDialog == dialog then
+				if dialog.Visible then dialog.Visible = false end
+				return
+			end
+			clearDialog()
+			currentDialog = dialog
+			originalVisible = dialog.Visible
+			dialogConnection = dialog:GetPropertyChangedSignal("Visible"):Connect(function()
+				if enabled and dialog.Visible then dialog.Visible = false end
+			end)
+			dialog.Visible = false
+		end
+
+		local function stopPopupHiding()
+			enabled = false
+			if addedConnection then addedConnection:Disconnect(); addedConnection = nil end
+			clearDialog()
+		end
+
+		local env = (getgenv and getgenv()) or _G
+		if type(env.__CubixStopTradePopupHiding) == "function" then
+			pcall(env.__CubixStopTradePopupHiding)
+		end
+		env.__CubixStopTradePopupHiding = stopPopupHiding
+
+		TradeTab:CreateToggle({
+			Name = "Disable Trade Popups",
+			CurrentValue = true,
+			Flag = "CubixDisableTradePopups",
+			Callback = function(value)
+				if value == true then
+					enabled = true
+					bindDialog()
+					if not addedConnection then
+						addedConnection = gui.DescendantAdded:Connect(function(obj)
+							if obj.Name == "Dialog" or obj.Name == "DialogApp" then
+								task.defer(bindDialog)
+							end
+						end)
+					end
+				else
+					stopPopupHiding()
+				end
+			end,
+		})
+		bindDialog()
+		if not addedConnection then
+			addedConnection = gui.DescendantAdded:Connect(function(obj)
+				if obj.Name == "Dialog" or obj.Name == "DialogApp" then
+					task.defer(bindDialog)
+				end
+			end)
+		end
+	end
+
 	tradeDropdown = TradeTab:CreateDropdown({
 		Name = "Select Houses To Trade",
 		Options = ownedHouseList,
@@ -2858,8 +3249,7 @@ local function loadMain()
 					end
 
 					if tick() - lastListAttempt >= 4 then
-						-- Re-check immediately before listing so turning Auto Trade OFF
-						-- cannot start another list request from this loop.
+
 						if not autoTradeStillEnabled() then break end
 
 						lastListAttempt = tick()
@@ -2867,8 +3257,6 @@ local function loadMain()
 							if not autoTradeStillEnabled() then return end
 							Router.get("HousingAPI/ListHouse"):InvokeServer(entryId)
 
-							-- If the toggle was disabled while InvokeServer was yielding,
-							-- force the house back to an unlisted state.
 							if not autoTradeStillEnabled() then
 								pcall(function()
 									Router.get("HousingAPI/UnlistHouse"):InvokeServer()
@@ -2916,14 +3304,10 @@ local function loadMain()
 				processAutoList()
 			else
 
-				-- Invalidate the running loop first. Any old task immediately becomes stale.
 				autoTradeLoopToken += 1
 				autoTradeLoopRunning = false
 				autoTradeWaitingNoticeShown = false
 
-				-- Auto Trade OFF must also leave the currently spawned house unlisted.
-				-- Run it more than once to win a race against an InvokeServer that may
-				-- already have been yielding at the exact moment the toggle was disabled.
 				local offToken = autoTradeLoopToken
 				local function ensureAutoTradeUnlisted()
 					if autoListAfterPaste or autoTradeLoopToken ~= offToken then return end
@@ -3003,8 +3387,7 @@ local function loadMain()
 		return t
 	end
 
-	Tab:CreateLabel(
-		"If you are using glitch houses, use the slow paste. And if you are using normal houses, use the fast paste. If you use it on higher builds expect lagging or crashing.",
+	Tab:CreateLabel("If you are using glitch houses, use the slow paste. And if you are using normal houses, use the fast paste. If you use it on higher builds expect lagging or crashing.",
 		"info"
 	)
 	Tab:CreateLabel("Do not Touch", "info")
@@ -4158,8 +4541,7 @@ local function loadMain()
 	local userPastebinUsername = ""
 	local userPastebinPassword = ""
 
-	PastebinTab:CreateLabel(
-		"TO GET DEV API KEY YOU NEED TO MAKE ACCOUNT ON PASTEBIN AFTER THAT GO TO https://pastebin.com/doc_api AND COPY YOUR DEV API KEY",
+	PastebinTab:CreateLabel("TO GET DEV API KEY YOU NEED TO MAKE ACCOUNT ON PASTEBIN AFTER THAT GO TO https://pastebin.com/doc_api AND COPY YOUR DEV API KEY",
 		"info"
 	)
 	PastebinTab:CreateDivider()
@@ -4267,6 +4649,7 @@ local function loadMain()
 		end,
 	})
 
+	local function initializeFileManagementTabs()
 	local CreateFileTab = Window:CreateTab("Create File", "folder")
 
 	if not isfolder(houseFilesPath) then makefolder(houseFilesPath) end
@@ -4656,6 +5039,10 @@ local function loadMain()
 		refreshSources()
 	end
 
+	end 
+	initializeFileManagementTabs()
+
+	local function initializeTeleportAndStartup()
 	local Teleport = Window:CreateTab("Teleport", "map-pin")
 	Teleport:CreateSection("House Teleports")
 
@@ -4745,6 +5132,9 @@ local function loadMain()
 		end
 	end)
 
+	pasteHistory = safeReadJSON(pasteHistoryPath) or {}
+	pasteCheckpoint = safeReadJSON(pasteCheckpointPath)
+	if pasteCheckpoint and pasteCheckpoint.state == "idle" then pasteCheckpoint = nil end
 	refreshOwnedHouses()
 	local loadCallOk, loadedOk, loadInfo = pcall(loadAutoPasteConfig)
 	if not loadCallOk then
@@ -4755,10 +5145,8 @@ local function loadMain()
 	autoPasteConfigReady = true
 	autoSaveAutoPasteConfig()
 
-	-- Default hotbar setup. If the Trade License is already in any detected
-	-- hotbar slot, this does nothing. Otherwise it assigns it to slot 1.
 	task.spawn(function()
-		-- Give ClientData a short moment to finish loading after join/rejoin.
+		
 		local deadline = tick() + 10
 		repeat
 			local ok = pcall(function()
@@ -4772,6 +5160,15 @@ local function loadMain()
 	end)
 
 	Rayfield:Notify({ Title = "Cubix", Content = "Loaded successfully!", Duration = 5 })
+	end 
+	initializeTeleportAndStartup()
 end
 
-loadMain()
+local startupOk, startupErr = xpcall(loadMain, function(err)
+    local trace = (debug and type(debug.traceback) == "function") and debug.traceback(tostring(err), 2) or tostring(err)
+    warn("[Cubix Mobile Startup Error] " .. trace)
+    return trace
+end)
+if not startupOk then
+    warn("[Cubix] Startup failed. See the error printed above: " .. tostring(startupErr))
+end
