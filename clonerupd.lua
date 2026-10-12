@@ -2860,90 +2860,82 @@ local function loadMain()
 	local lastTradeCount = -1
 
 	do
-		local gui = plr:WaitForChild("PlayerGui")
-		local enabled = false
-		local records = setmetatable({}, { __mode = "k" })
-		local connections = {}
-		local trackedDialog
-		local generation = 0
-		local properties = {
-			"BackgroundTransparency", "TextTransparency", "TextStrokeTransparency",
-			"ImageTransparency", "ScrollBarImageTransparency", "Transparency",
-			"GroupTransparency"
-		}
+		-- Reference Auto Trade popup behavior: hide DialogApp.Dialog only.
+		-- No TradeApp disabling, HintApp destruction, or ToolsFrame modifications.
+		local playerGui = plr:WaitForChild("PlayerGui")
+		local active = false
+		local popupConnections = {}
+		local currentDialog = nil
+		local originallyVisible = nil
+		local updating = false
+		local currentDialogConnection = nil
 
-		local function disconnectAll()
-			for _, connection in ipairs(connections) do
+		local function disconnectPopupConnections()
+			for _, connection in ipairs(popupConnections) do
 				pcall(function() connection:Disconnect() end)
 			end
-			table.clear(connections)
+			table.clear(popupConnections)
 		end
 
-		local function maskObject(object)
-			if records[object] then return end
-			local saved = {}
-			for _, property in ipairs(properties) do
-				local ok, value = pcall(function() return object[property] end)
-				if ok and type(value) == "number" then
-					saved[property] = value
-					pcall(function() object[property] = 1 end)
-				end
+		local function restoreDialog()
+			if currentDialog and currentDialog.Parent and originallyVisible ~= nil then
+				updating = true
+				pcall(function() currentDialog.Visible = originallyVisible end)
+				updating = false
 			end
-			if object:IsA("GuiObject") then
-				local ok, value = pcall(function() return object.Interactable end)
-				if ok then
-					saved.Interactable = value
-					pcall(function() object.Interactable = false end)
-				end
-			end
-			if next(saved) then records[object] = saved end
+			currentDialog = nil
+			originallyVisible = nil
 		end
 
-		local function restoreAll()
-			for object, saved in pairs(records) do
-				if object.Parent then
-					for property, value in pairs(saved) do
-						pcall(function() object[property] = value end)
-					end
-				end
-				records[object] = nil
-			end
-		end
-
-		local function attachDialog()
-			if not enabled then return end
-			local app = gui:FindFirstChild("DialogApp")
+		local function findDialog()
+			local app = playerGui:FindFirstChild("DialogApp")
 			local dialog = app and app:FindFirstChild("Dialog")
-			if not dialog or not dialog:IsA("GuiObject") then return end
-			if dialog == trackedDialog then return end
-			trackedDialog = dialog
-			maskObject(dialog)
-			for _, item in ipairs(dialog:GetDescendants()) do maskObject(item) end
-			local token = generation
-			table.insert(connections, dialog.DescendantAdded:Connect(function(item)
-				if enabled and generation == token then maskObject(item) end
-			end))
+			if dialog and dialog:IsA("GuiObject") then
+				return dialog
+			end
+			return nil
+		end
+
+		local function hideDialog()
+			if not active then return end
+			local dialog = findDialog()
+			if not dialog then return end
+			if currentDialog ~= dialog then
+				-- When the game recreates its dialog, detach only the old listener.
+				if currentDialogConnection then
+					pcall(function() currentDialogConnection:Disconnect() end)
+				end
+				restoreDialog()
+				currentDialog = dialog
+				originallyVisible = dialog.Visible
+				currentDialogConnection = dialog:GetPropertyChangedSignal("Visible"):Connect(function()
+					if active and not updating and dialog.Visible then
+						updating = true
+						dialog.Visible = false
+						updating = false
+					end
+				end)
+				table.insert(popupConnections, currentDialogConnection)
+			end
+			if dialog.Visible then
+				updating = true
+				dialog.Visible = false
+				updating = false
+			end
 		end
 
 		local function setPopupDisabled(value)
-			local nextValue = value == true
-			if enabled == nextValue then return end
-			enabled = nextValue
-			generation += 1
-			disconnectAll()
-			restoreAll()
-			trackedDialog = nil
-			if enabled then
-				table.insert(connections, gui.DescendantAdded:Connect(function(item)
-					if item.Name == "DialogApp" or item.Name == "Dialog" then
-						local token = generation
-						task.defer(function()
-							if enabled and generation == token then attachDialog() end
-						end)
-					end
-				end))
-				attachDialog()
-			end
+			active = value == true
+			disconnectPopupConnections()
+			currentDialogConnection = nil
+			restoreDialog()
+			if not active then return end
+			table.insert(popupConnections, playerGui.DescendantAdded:Connect(function(obj)
+				if obj.Name == "DialogApp" or obj.Name == "Dialog" then
+					task.defer(hideDialog)
+				end
+			end))
+			hideDialog()
 		end
 
 		local env = (getgenv and getgenv()) or _G
@@ -2957,10 +2949,9 @@ local function loadMain()
 		TradeTab:CreateToggle({
 			Name = "Disable Trade Popups",
 			CurrentValue = false,
-			Flag = "CubixDisableTradePopups",
+			Flag = "CubixDisableTradePopupsDialogOnlyV4",
 			Callback = setPopupDisabled,
 		})
-		setPopupDisabled(true)
 	end
 
 	tradeDropdown = TradeTab:CreateDropdown({
