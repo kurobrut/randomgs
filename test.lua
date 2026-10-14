@@ -4676,6 +4676,8 @@ local function loadMain()
 	end)
 	Players.PlayerRemoving:Connect(function() task.wait(0.3) refreshPlayers() end)
 
+	-- Pastebin UI is isolated to avoid hitting Luau's 200-register limit in loadMain.
+	local function initializePastebinTab()
 	local PastebinTab = Window:CreateTab("Pastebin", "clipboard")
 	local userPastebinDevKey = ""
 	local userPastebinUsername = ""
@@ -4788,6 +4790,9 @@ local function loadMain()
 			Rayfield:Notify({ Title = "Success", Content = "House saved to Pastebin\nLink copied to clipboard", Duration = 8 })
 		end,
 	})
+
+	end -- initializePastebinTab
+	initializePastebinTab()
 
 	local function initializeFileManagementTabs()
 	local CreateFileTab = Window:CreateTab("Create File", "folder")
