@@ -2930,6 +2930,8 @@ local function loadMain()
 			if label then
 				tradeSelections[id] = label
 				table.insert(labels, label)
+			else
+				tradeSelections[id] = nil -- No longer in owned-house inventory
 			end
 		end
 		table.sort(labels)
@@ -2937,27 +2939,28 @@ local function loadMain()
 	end
 
 	syncTradeDropdown = function(refreshOptions)
-		if not tradeDropdown or syncingTradeDropdown then return end
+		if not tradeDropdown then return end
+		local labels = selectedTradeLabels()
+		local count = #labels
+		lastTradeCount = count
 		syncingTradeDropdown = true
 		local ok, err = pcall(function()
 			if refreshOptions then tradeDropdown:Refresh(ownedHouseList, true) end
-			tradeDropdown:Set(selectedTradeLabels())
+			tradeDropdown:Set(labels)
 		end)
 		syncingTradeDropdown = false
-		if not ok then warn("[Cubix Trading] Dropdown sync failed:", err) end
+		if not ok then warn("[Cubix Trading] Dropdown synchronization failed:", err) end
 	end
 
 	local function removeTradeSelection(id)
 		tradeSelections[id] = nil
-		lastTradeCount = #selectedTradeLabels()
 		syncTradeDropdown(false)
 	end
 
 	local function stopTrading(message, clearSelections)
 		tradingRunning = false
-		tradingGeneration += 1 -- invalidates the current worker
+		tradingGeneration += 1
 		if clearSelections then table.clear(tradeSelections) end
-		lastTradeCount = #selectedTradeLabels()
 		syncTradeDropdown(false)
 		setTradingStatus(message or "Stopped")
 	end
@@ -3117,105 +3120,90 @@ local function loadMain()
 		end
 
 		tradingGeneration += 1
-		local generation = tradingGeneration
+		local myGeneration = tradingGeneration
 		tradingRunning = true
-		local function active()
-			return tradingRunning and generation == tradingGeneration
+		local function stillRunning()
+			return tradingRunning and myGeneration == tradingGeneration
 		end
 		setTradingStatus("Started | " .. #selectedTradeLabels() .. " queued")
 		task.spawn(function()
-			local completed, failed = 0, 0
-			local ok, err = pcall(function()
-				while active() do
+			while stillRunning() do
+				refreshOwnedHouses()
+				if not stillRunning() then break end
+				local ids = {}
+				for id in pairs(tradeSelections) do table.insert(ids, id) end
+				table.sort(ids, function(x, y)
+					return tostring(ownedHouseLabelById[x] or x) < tostring(ownedHouseLabelById[y] or y)
+				end)
+				if #ids == 0 then
+					stopTrading("Queue finished - no selected houses left", false)
+					break
+				end
+
+				local id = ids[1]
+				local name = tradeSelections[id]
+				if not getOwnedHouseById(id) then
+					setTradingStatus(tostring(name) .. " no longer owned; deselected")
+					removeTradeSelection(id)
+					continue
+				end
+				setTradingStatus("Spawning " .. tostring(name) .. " | " .. #ids .. " remaining")
+				local spawnOK, spawnErr = pcall(function()
+					if not stillRunning() then return end
+					Router.get("HousingAPI/SpawnHouse"):FireServer(id)
+				end)
+				if not stillRunning() then break end
+				if not spawnOK then
+					warn("[Cubix Trading] Spawn failed:", spawnErr)
+					setTradingStatus(tostring(name) .. " spawn failed; deselected")
+					removeTradeSelection(id)
+					continue
+				end
+
+				for _ = 1, 20 do
+					if not stillRunning() or not tradeSelections[id] then break end
+					task.wait(0.25)
+				end
+				if not stillRunning() then break end
+				if not tradeSelections[id] then continue end
+				if not getOwnedHouseById(id) then
+					removeTradeSelection(id)
+					setTradingStatus(tostring(name) .. " no longer owned; deselected")
+					continue
+				end
+
+				setTradingStatus("Listing " .. tostring(name))
+				local listOK, listResult = pcall(function()
+					if not stillRunning() then return nil end
+					return Router.get("HousingAPI/ListHouse"):InvokeServer(id)
+				end)
+				if not stillRunning() then break end
+				if not listOK or listResult == false then
+					setTradingStatus(tostring(name) .. " listing failed; deselected")
+					removeTradeSelection(id)
+					continue
+				end
+
+				setTradingStatus("Waiting for " .. tostring(name) .. " to trade")
+				local gone, reason = waitUntilHouseGone(id, 300, function()
+					return stillRunning() and tradeSelections[id] ~= nil
+				end)
+				if not stillRunning() then break end
+				if gone then
+					setTradingStatus(tostring(name) .. " traded / removed from inventory")
+					removeTradeSelection(id)
 					refreshOwnedHouses()
-					if not active() then break end
-					local ids = {}
-					for id in pairs(tradeSelections) do table.insert(ids, id) end
-					table.sort(ids, function(x,y)
-						return tostring(ownedHouseLabelById[x] or x) < tostring(ownedHouseLabelById[y] or y)
-					end)
-					if #ids == 0 then break end
-
-					local id = ids[1]
-					local name = tradeSelections[id]
-					if not getOwnedHouseById(id) then
-						removeTradeSelection(id)
-						setTradingStatus(tostring(name) .. " no longer owned; deselected")
-						continue
-					end
-					setTradingStatus("Spawning " .. tostring(name) .. " | " .. #ids .. " remaining")
-					local spawnOK, spawnErr = pcall(function()
-						if active() then Router.get("HousingAPI/SpawnHouse"):FireServer(id) end
-					end)
-					if not active() then break end
-					if not spawnOK then
-						failed += 1
-						warn("[Cubix Trading] Spawn failed:", spawnErr)
-						setTradingStatus(tostring(name) .. " spawn failed; queue stopped")
-						break
-					end
-
-					for _ = 1, 20 do
-						if not active() or not tradeSelections[id] then break end
-						task.wait(0.25)
-					end
-					if not active() then break end
-					if not tradeSelections[id] then continue end
-					if not getOwnedHouseById(id) then
-						removeTradeSelection(id)
-						setTradingStatus(tostring(name) .. " no longer owned; deselected")
-						continue
-					end
-
-					setTradingStatus("Listing " .. tostring(name))
-					local listOK, listResult = pcall(function()
-						if active() then return Router.get("HousingAPI/ListHouse"):InvokeServer(id) end
-					end)
-					if not active() then break end
-					if not listOK or listResult == false then
-						failed += 1
-						setTradingStatus(tostring(name) .. " listing failed; queue stopped")
-						break
-					end
-
-					setTradingStatus("Waiting for " .. tostring(name) .. " to trade")
-					local gone, reason = waitUntilHouseGone(id, 300, function()
-						return active() and tradeSelections[id] ~= nil
-					end)
-					if not active() then break end
-					if gone then
-						-- Confirm disappearance persists before counting a successful trade.
-						task.wait(1.5)
-						if not active() then break end
-						if not getOwnedHouseById(id) then
-							completed += 1
-							removeTradeSelection(id)
-							refreshOwnedHouses()
-							setTradingStatus(tostring(name) .. " traded; automatically deselected")
-						else
-							setTradingStatus(tostring(name) .. " still owned; queue stopped")
-							break
-						end
-					elseif reason == "timeout" then
-						setTradingStatus(tostring(name) .. " timed out; not confirmed traded, still selected")
-						break
-					else
-						setTradingStatus(tostring(name) .. " deselected; waiting cancelled")
-					end
-					if active() then task.wait(0.5) end
-				end
-			end)
-			if not ok then warn("[Cubix Trading] Queue error:", err) end
-			if generation == tradingGeneration then
-				tradingRunning = false
-				local remaining = #selectedTradeLabels()
-				if not ok then
-					setTradingStatus("Queue error; " .. remaining .. " houses still selected")
-				elseif remaining == 0 then
-					setTradingStatus("Finished | " .. completed .. " traded | 0 remaining")
+				elseif reason == "timeout" then
+					setTradingStatus(tostring(name) .. " timed out (NOT confirmed traded); deselected")
+					removeTradeSelection(id)
 				else
-					setTradingStatus("Stopped | " .. completed .. " traded | " .. remaining .. " still selected")
+					setTradingStatus(tostring(name) .. " cancelled or deselected")
 				end
+				if stillRunning() then task.wait(0.5) end
+			end
+			if myGeneration == tradingGeneration then
+				tradingRunning = false
+				setTradingStatus("Stopped | " .. #selectedTradeLabels() .. " still selected")
 			end
 		end)
 	end
@@ -4676,8 +4664,6 @@ local function loadMain()
 	end)
 	Players.PlayerRemoving:Connect(function() task.wait(0.3) refreshPlayers() end)
 
-	-- Pastebin UI is isolated to avoid hitting Luau's 200-register limit in loadMain.
-	local function initializePastebinTab()
 	local PastebinTab = Window:CreateTab("Pastebin", "clipboard")
 	local userPastebinDevKey = ""
 	local userPastebinUsername = ""
@@ -4790,9 +4776,6 @@ local function loadMain()
 			Rayfield:Notify({ Title = "Success", Content = "House saved to Pastebin\nLink copied to clipboard", Duration = 8 })
 		end,
 	})
-
-	end -- initializePastebinTab
-	initializePastebinTab()
 
 	local function initializeFileManagementTabs()
 	local CreateFileTab = Window:CreateTab("Create File", "folder")
