@@ -132,6 +132,29 @@ local function loadMain()
 		error("Failed to initialize Rayfield: " .. tostring(Rayfield))
 	end
 
+	-- Re-execution: close the previous Cubix window before creating a new one.
+	local cubixEnv = (getgenv and getgenv()) or _G
+	if type(cubixEnv.__CubixClosePreviousWindow) == "function" then
+		pcall(cubixEnv.__CubixClosePreviousWindow)
+		cubixEnv.__CubixClosePreviousWindow = nil
+	end
+
+	-- Verify that the executor can actually write, not merely expose writefile.
+	local fileWritingAvailable = false
+	if type(writefile) == "function" and type(readfile) == "function"
+		and type(isfolder) == "function" and type(makefolder) == "function" then
+		local testPath = "CubixWriteProbe.tmp"
+		local ok = pcall(function()
+			writefile(testPath, "Cubix test")
+			assert(readfile(testPath) == "Cubix test", "readback failed")
+			if type(delfile) == "function" then pcall(delfile, testPath) end
+		end)
+		fileWritingAvailable = ok
+	end
+	if not fileWritingAvailable then
+		warn("[Cubix] Executor file saving unavailable; automatic persistence may fail. House operations can still run.")
+	end
+
 	local Window = Rayfield:CreateWindow({
 		Name = "Cubix . House Cloner ",
 		LoadingTitle = "Cubix",
@@ -139,7 +162,7 @@ local function loadMain()
 		ShowText = "Cubix",
 		Theme = "Amethyst",
 		ConfigurationSaving = {
-			Enabled = type(writefile) == "function" and type(readfile) == "function" and type(isfolder) == "function",
+			Enabled = fileWritingAvailable,
 			FileName = "CubixAutoPasteV3",
 		},
 		Discord = {
@@ -148,6 +171,10 @@ local function loadMain()
 			RememberJoins = false,
 		},
 	})
+
+	cubixEnv.__CubixClosePreviousWindow = function()
+		pcall(function() Rayfield:Destroy() end)
+	end
 
 	local savedhouse = nil
 	local stopFlag = false
@@ -315,6 +342,7 @@ local function loadMain()
 	local ownedDropdown
 	local tradeDropdown
 	local syncTradeDropdown
+	local refreshingOwnedHouses = false
 	local autoPasteDropdown
 	local autoPasteSelections = {}
 	local pendingAutoPasteTargetIds = {}
@@ -400,6 +428,8 @@ local function loadMain()
 	end
 
 	local function refreshOwnedHouses()
+		if refreshingOwnedHouses then return end
+		refreshingOwnedHouses = true
 		table.clear(ownedHouseList)
 		table.clear(ownedHouseMap)
 		table.clear(ownedHouseLabelById)
@@ -433,8 +463,8 @@ local function loadMain()
 		if ownedDropdown then
 			pcall(function() ownedDropdown:Refresh(ownedHouseList, true) end)
 		end
-		if tradeDropdown and syncTradeDropdown then
-			syncTradeDropdown(true)
+		if tradeDropdown then
+			pcall(function() tradeDropdown:Refresh(ownedHouseList, true) end)
 		end
 		if autoPasteDropdown then
 			autoPasteApplyingSavedTargets = true
@@ -454,6 +484,7 @@ local function loadMain()
 		if restorePendingAutoPasteTargets then
 			restorePendingAutoPasteTargets(true)
 		end
+		refreshingOwnedHouses = false
 	end
 
 	local AutoPasteTab = Window:CreateTab("Automation", "copy")
@@ -515,8 +546,14 @@ local function loadMain()
 	local pasteCheckpointPath = houseSettingsPath .. "/paste_checkpoint.json"
 	local pasteHistory = {}
 	local pasteCheckpoint = nil
+	local warnedSaveFailure = false
 	local function safeWriteJSON(path, value)
+		if not fileWritingAvailable then return false, "Executor file saving is unavailable" end
 		local ok, err = pcall(function() writefile(path, HttpService:JSONEncode(value)) end)
+		if not ok and not warnedSaveFailure then
+			warn("[Cubix] Could not save data: " .. tostring(err))
+			warnedSaveFailure = true
+		end
 		return ok, err
 	end
 	local function safeReadJSON(path)
@@ -1257,6 +1294,9 @@ local function loadMain()
 	end
 
 	saveAutoPasteConfig = function()
+		if not fileWritingAvailable then
+			return false, "Executor file saving unavailable; queue will not persist after rejoin"
+		end
 		local folderOk, folderErr = pcall(function()
 			if not isfolder(houseFSPath) then makefolder(houseFSPath) end
 			if not isfolder(houseSettingsPath) then makefolder(houseSettingsPath) end
