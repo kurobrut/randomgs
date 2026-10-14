@@ -24,27 +24,6 @@ while not plr do
 	plr = Players.LocalPlayer
 end
 
-local function compatibleLabel(tab, message, icon)
-    local ok, label = pcall(function()
-        return tab:CreateLabel(message, icon)
-    end)
-    if ok and label then return label end
-    local fallbackOk, paragraph = pcall(function()
-        return tab:CreateParagraph({Title = "", Content = tostring(message)})
-    end)
-    if fallbackOk and paragraph then
-        return {
-            Set = function(_, value)
-                pcall(function()
-                    paragraph:Set({Title = "", Content = tostring(value)})
-                end)
-            end
-        }
-    end
-    warn("[Cubix UI] Label unavailable; continuing without it: " .. tostring(message))
-    return {Set = function() end}
-end
-
 local TRADE_LICENSE_SLOT = 1
 
 local function tableContainsTradeLicense(value, depth, seen)
@@ -137,13 +116,6 @@ local function ensureTradeLicenseInHotbar()
 	return true, "assigned"
 end
 
-local function lEncode(t)
-	return HttpService:JSONEncode(t)
-end
-local function lDecode(s)
-	return HttpService:JSONDecode(s)
-end
-
 local function loadMain()
 	local fetchOk, rayfieldSource = pcall(function()
 		return game:HttpGet("https://sirius.menu/rayfield")
@@ -164,6 +136,7 @@ local function loadMain()
 		Name = "Cubix . House Cloner ",
 		LoadingTitle = "Cubix",
 		LoadingSubtitle = "House Cloner",
+		ShowText = "Cubix",
 		Theme = "Amethyst",
 		ConfigurationSaving = {
 			Enabled = type(writefile) == "function" and type(readfile) == "function" and type(isfolder) == "function",
@@ -206,10 +179,10 @@ local function loadMain()
 	local TradeTab = Window:CreateTab("Trading", "repeat")
 
 	Manager:CreateSection("Scan Information")
-	local furniture_label = compatibleLabel(Manager, "House Furniture: 0 ($0)", "armchair")
-	local textures_label = compatibleLabel(Manager, "House Textures: 0 ($0)", "grid-2x2")
-	local ambiance_label = compatibleLabel(Manager, "House Ambiance: No", "sun")
-	local type_label = compatibleLabel(Manager, "House Type: -", "home")
+	local furniture_label = Manager:CreateLabel("House Furniture: 0 ($0)", "armchair")
+	local textures_label = Manager:CreateLabel("House Textures: 0 ($0)", "grid-2x2")
+	local ambiance_label = Manager:CreateLabel("House Ambiance: No", "sun")
+	local type_label = Manager:CreateLabel("House Type: -", "home")
 
 	local scanInfoGui
 	local scanInfoFrame
@@ -286,9 +259,9 @@ local function loadMain()
 	end
 
 	Manager:CreateSection("Process Status")
-	local status_label = compatibleLabel(Manager, "Building Status: Idle", "activity")
-	local prog_label = compatibleLabel(Manager, "Building Prog: -", "trending-up")
-	local item_label = compatibleLabel(Manager, "Items: -", "box")
+	local status_label = Manager:CreateLabel("Building Status: Idle", "activity")
+	local prog_label = Manager:CreateLabel("Building Prog: -", "trending-up")
+	local item_label = Manager:CreateLabel("Items: -", "box")
 
 	local function setscaninfo(f_count, f_cost, t_count, t_cost, amb, typ)
 		scanInfoValues = { f_count, f_cost, t_count, t_cost, amb, typ }
@@ -341,6 +314,7 @@ local function loadMain()
 	local ownedHouseTypeMap = {}
 	local ownedDropdown
 	local tradeDropdown
+	local syncTradeDropdown
 	local autoPasteDropdown
 	local autoPasteSelections = {}
 	local pendingAutoPasteTargetIds = {}
@@ -459,8 +433,8 @@ local function loadMain()
 		if ownedDropdown then
 			pcall(function() ownedDropdown:Refresh(ownedHouseList, true) end)
 		end
-		if tradeDropdown then
-			pcall(function() tradeDropdown:Refresh(ownedHouseList, true) end)
+		if tradeDropdown and syncTradeDropdown then
+			syncTradeDropdown(true)
 		end
 		if autoPasteDropdown then
 			autoPasteApplyingSavedTargets = true
@@ -536,6 +510,8 @@ local function loadMain()
 
 	local queueDataFolder = houseSettingsPath .. "/queue_data"
 	local pasteHistoryPath = houseSettingsPath .. "/paste_history.json"
+	local freshPurchasesPath = houseSettingsPath .. "/fresh_purchases.json"
+	local freshPurchases = {}
 	local pasteCheckpointPath = houseSettingsPath .. "/paste_checkpoint.json"
 	local pasteHistory = {}
 	local pasteCheckpoint = nil
@@ -558,12 +534,27 @@ local function loadMain()
 	local function saveHistory()
 		return safeWriteJSON(pasteHistoryPath, pasteHistory)
 	end
+	local function markFreshPurchase(houseId)
+		if houseId == nil then return end
+		local key = tostring(houseId)
+		freshPurchases[key] = os.time()
+		local saved, err = safeWriteJSON(freshPurchasesPath, freshPurchases)
+		if not saved then warn("[Cubix] Could not save newly purchased house:", err) end
+		print("[Cubix] New purchase eligible for paste:", key)
+	end
+	local function wasPreviouslyCompleted(houseId)
+		local key = tostring(houseId)
+		return pasteHistory[key] ~= nil and freshPurchases[key] == nil
+	end
 	local function recordPasteSuccess(houseId, houseName, sourceName)
 		pasteHistory[tostring(houseId)] = {
 			house_id = tostring(houseId), name = tostring(houseName),
 			source = tostring(sourceName or "Loaded House"), timestamp = os.time()
 		}
 		saveHistory()
+		-- The new purchase is now legitimately completed.
+		freshPurchases[tostring(houseId)] = nil
+		safeWriteJSON(freshPurchasesPath, freshPurchases)
 		persistCheckpoint(nil)
 	end
 	local function countFurniture(houseData)
@@ -1062,7 +1053,7 @@ local function loadMain()
 				Instance.new("UICorner", row).CornerRadius = UDim.new(0, 7)
 				local nameLabel = Instance.new("TextLabel")
 				nameLabel.Position = UDim2.fromOffset(10, 4)
-				nameLabel.Size = UDim2.new(1, -20, 0, 23)
+				nameLabel.Size = UDim2.new(1, -103, 0, 23)
 				nameLabel.BackgroundTransparency = 1
 				nameLabel.TextXAlignment = Enum.TextXAlignment.Left
 				nameLabel.TextTruncate = Enum.TextTruncate.AtEnd
@@ -1073,7 +1064,7 @@ local function loadMain()
 				nameLabel.Parent = row
 				local info = Instance.new("TextLabel")
 				info.Position = UDim2.fromOffset(10, 27)
-				info.Size = UDim2.new(1, -20, 0, 18)
+				info.Size = UDim2.new(1, -103, 0, 18)
 				info.BackgroundTransparency = 1
 				info.TextXAlignment = Enum.TextXAlignment.Left
 				info.TextTruncate = Enum.TextTruncate.AtEnd
@@ -1082,6 +1073,42 @@ local function loadMain()
 				info.Font = Enum.Font.Gotham
 				info.TextSize = 11
 				info.Parent = row
+
+				-- Remove this exact queue entry (not every copy of the same file).
+				local removeButton = Instance.new("TextButton")
+				removeButton.Name = "RemoveEntry"
+				removeButton.AnchorPoint = Vector2.new(1, 0.5)
+				removeButton.Position = UDim2.new(1, -9, 0.5, 0)
+				removeButton.Size = UDim2.fromOffset(75, 32)
+				removeButton.BackgroundColor3 = Color3.fromRGB(144, 53, 73)
+				removeButton.BorderSizePixel = 0
+				removeButton.Text = "Remove"
+				removeButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+				removeButton.Font = Enum.Font.GothamBold
+				removeButton.TextSize = 12
+				removeButton.Parent = row
+				Instance.new("UICorner", removeButton).CornerRadius = UDim.new(0, 6)
+				removeButton.MouseButton1Click:Connect(function()
+					-- Avoid changing indices while an active paste/buy task uses the queue.
+					if autoPasteRunning or autoBuyQueuedRunning then
+						pcall(function()
+							Rayfield:Notify({Title="File Queue", Content="Stop Auto Paste / Auto Buy before removing queue entries.", Duration=4})
+						end)
+						return
+					end
+					local removeIndex = table.find(fileQueue, entry)
+					if not removeIndex then return end
+					local removed = table.remove(fileQueue, removeIndex)
+					rebuildQueueLabel()
+					setAPFileInfo()
+					local ok, saved, saveErr = pcall(saveAutoPasteConfig)
+					if not ok or not saved then
+						warn("[Cubix Queue] Could not save removal:", tostring(saveErr or saved))
+						pcall(function() Rayfield:Notify({Title="File Queue", Content="Removed, but failed to save. Check console.", Duration=5}) end)
+					else
+						print("[Cubix Queue] Removed:", tostring(removed.filename), "| Remaining:", #fileQueue)
+					end
+				end)
 			end
 		end
 		if queueViewerCount then
@@ -1446,7 +1473,7 @@ local function loadMain()
 	end
 
 	refreshOwnedHouses()
-	compatibleLabel(AutoPasteTab, "Use the current loaded house, or queue files from HouseFS/Houses.", "info")
+	AutoPasteTab:CreateLabel("Use the current loaded house, or queue files from HouseFS/Houses.", "info")
 
 	AutoPasteTab:CreateSection("Source")
 	autoPasteSourceDropdown = AutoPasteTab:CreateDropdown({
@@ -1569,7 +1596,7 @@ local function loadMain()
 		end,
 	})
 
-	fqQueueListLabel = compatibleLabel(AutoPasteTab, "Queue: 0 file(s) | Next: (empty)", "list")
+	fqQueueListLabel = AutoPasteTab:CreateLabel("Queue: 0 file(s) | Next: (empty)", "list")
 	AutoPasteTab:CreateButton({
 		Name = "View Queue (Scrollable)",
 		Callback = function()
@@ -1868,14 +1895,14 @@ local function loadMain()
 				count += 1
 				print("[Cubix History]", id, record.name, record.source, record.timestamp)
 			end
-			Rayfield:Notify({Title="Completed History", Content=tostring(count) .. " completed house ID(s). Details in console.", Duration=5})
+			Rayfield:Notify({Title = "Completed History", Content = tostring(count) .. " completed house ID(s). Details in console.", Duration = 5})
 		end,
 	})
 
-	autoPasteStatus = compatibleLabel(AutoPasteTab, "Status: Idle", "activity")
-	autoPasteProgress = compatibleLabel(AutoPasteTab, "Progress: -", "trending-up")
-	autoPasteFileInfo = compatibleLabel(AutoPasteTab, "File Queue: 0 file(s)", "list")
-	autoPasteQueueCostLabel = compatibleLabel(AutoPasteTab, "Queued Total Cost: $0", "list")
+	autoPasteStatus = AutoPasteTab:CreateLabel("Status: Idle", "activity")
+	autoPasteProgress = AutoPasteTab:CreateLabel("Progress: -", "trending-up")
+	autoPasteFileInfo = AutoPasteTab:CreateLabel("File Queue: 0 file(s)", "list")
+	autoPasteQueueCostLabel = AutoPasteTab:CreateLabel("Queued Total Cost: $0", "list")
 
 	local function setAPStatus(s) pcall(function() autoPasteStatus:Set("Status: " .. s) end) end
 	local function setAPProg(s)   pcall(function() autoPasteProgress:Set("Progress: " .. s) end) end
@@ -2032,24 +2059,30 @@ local function loadMain()
 		if not ok or type(interior) ~= "table" or tostring(interior.house_id) ~= tostring(houseId) then
 			return false, "Correct target interior is not ready"
 		end
-		local count, cost = 0, 0
-		local unavailable = {}
+		local count, cost, skipped = 0, 0, 0
 		for _, item in pairs(houseData.furniture) do
-			if type(item) ~= "table" or not item.id then return false, "Invalid furniture record" end
-			if item.id ~= "lures_2023_cozy_home_lure" then
+			if type(item) ~= "table" or not item.id then
+				skipped += 1
+			elseif item.id ~= "lures_2023_cozy_home_lure" then
 				local db = furnituresdb[item.id]
 				if not db or db.off_sale or type(db.cost) ~= "number" then
-					table.insert(unavailable, tostring(item.id))
+					skipped += 1
 				else
-					count += 1
-					cost += db.cost
+					local validCf = typeof(item.cframe) == "CFrame"
+					if not validCf and type(item.cframe) == "table" then
+						local cfOk, cf = pcall(function() return CFrame.new(table.unpack(item.cframe)) end)
+						validCf = cfOk and typeof(cf) == "CFrame"
+					end
+					if validCf then
+						count += 1
+						cost += db.cost
+					else
+						skipped += 1
+					end
 				end
 			end
 		end
-		if #unavailable > 0 then
-			return false, tostring(#unavailable) .. " furniture kinds unavailable (e.g. " .. unavailable[1] .. ")"
-		end
-		if count == 0 then return false, "No valid furniture to paste" end
+		if count == 0 then return false, "No available furniture with valid positions to paste (skipped " .. skipped .. ")" end
 		local moneyOk, data = pcall(function() return cd.get_data()[plr.Name] end)
 		local money = moneyOk and type(data) == "table" and tonumber(data.money) or nil
 		if not money then return false, "Could not verify your current money" end
@@ -2063,8 +2096,7 @@ local function loadMain()
 			end
 		end
 		if money < cost then return false, "Insufficient money: need $" .. cost .. ", have $" .. money end
-		
-		return true, "Preflight passed: " .. count .. " furniture; estimated $" .. cost
+		return true, "Preflight passed: " .. count .. " available furniture; skipped " .. skipped .. "; estimated $" .. cost
 	end
 
 	local function pasteIntoHouse(houseId, houseName, houseData, mode, expectedType)
@@ -2281,7 +2313,7 @@ local function loadMain()
 
 		for id in pairs(autoPasteSelections) do
 			local key = tostring(id)
-			if not seen[key] and not (skipCompletedHouses and pasteHistory[key]) then
+			if not seen[key] and not (skipCompletedHouses and wasPreviouslyCompleted(key)) then
 				seen[key] = true
 				table.insert(ids, id)
 			end
@@ -2296,7 +2328,7 @@ local function loadMain()
 			for _, house in pairs(manager) do
 				if type(house) == "table" and house.house_id ~= nil and kaliremAP.isName(house.name) then
 					local key = tostring(house.house_id)
-					if not seen[key] and not (skipCompletedHouses and pasteHistory[key]) then
+					if not seen[key] and not (skipCompletedHouses and wasPreviouslyCompleted(key)) then
 						seen[key] = true
 						autoPasteSelections[house.house_id] = tostring(house.name or ("Kalirem [" .. key .. "]"))
 						table.insert(ids, house.house_id)
@@ -2599,6 +2631,8 @@ local function loadMain()
 		end
 
 		for _, house in ipairs(newHouses) do
+			-- Only purchase-confirmed new house IDs bypass old completion records.
+			markFreshPurchase(house.house_id)
 			maxNumber += 1
 			local newName = "Kalirem " .. maxNumber
 			local ok = pcall(function()
@@ -2880,85 +2914,172 @@ local function loadMain()
 	local tradingRunning = false
 	local tradeSelections = {}
 	local lastTradeCount = -1
+	local tradingGeneration = 0
+	local syncingTradeDropdown = false
+	local tradeStatusLabel = TradeTab:CreateLabel("Trading Status: Idle", "activity")
+
+	local function setTradingStatus(message)
+		pcall(function() tradeStatusLabel:Set("Trading Status: " .. tostring(message)) end)
+		print("[Cubix Trading] " .. tostring(message))
+	end
+
+	local function selectedTradeLabels()
+		local labels = {}
+		for id in pairs(tradeSelections) do
+			local label = ownedHouseLabelById[id]
+			if label then
+				tradeSelections[id] = label
+				table.insert(labels, label)
+			end
+		end
+		table.sort(labels)
+		return labels
+	end
+
+	syncTradeDropdown = function(refreshOptions)
+		if not tradeDropdown or syncingTradeDropdown then return end
+		syncingTradeDropdown = true
+		local ok, err = pcall(function()
+			if refreshOptions then tradeDropdown:Refresh(ownedHouseList, true) end
+			tradeDropdown:Set(selectedTradeLabels())
+		end)
+		syncingTradeDropdown = false
+		if not ok then warn("[Cubix Trading] Dropdown sync failed:", err) end
+	end
+
+	local function removeTradeSelection(id)
+		tradeSelections[id] = nil
+		lastTradeCount = #selectedTradeLabels()
+		syncTradeDropdown(false)
+	end
+
+	local function stopTrading(message, clearSelections)
+		tradingRunning = false
+		tradingGeneration += 1 -- invalidates the current worker
+		if clearSelections then table.clear(tradeSelections) end
+		lastTradeCount = #selectedTradeLabels()
+		syncTradeDropdown(false)
+		setTradingStatus(message or "Stopped")
+	end
 
 	do
-		local gui = plr:WaitForChild("PlayerGui")
-		local enabled = true
-		local dialogConnection
-		local addedConnection
-		local currentDialog
-		local originalVisible
+		-- Reference Auto Trade popup behavior: hide DialogApp.Dialog only.
+		-- No TradeApp disabling, HintApp destruction, or ToolsFrame modifications.
+		local playerGui = plr:WaitForChild("PlayerGui")
+		local active = false
+		local popupConnections = {}
+		local currentDialog = nil
+		local originallyVisible = nil
+		local updating = false
+		local currentDialogConnection = nil
 
-		local function clearDialog()
-			if dialogConnection then
-				dialogConnection:Disconnect()
-				dialogConnection = nil
+		local function disconnectPopupConnections()
+			for _, connection in ipairs(popupConnections) do
+				pcall(function() connection:Disconnect() end)
 			end
-			if currentDialog and currentDialog.Parent and originalVisible ~= nil then
-				pcall(function() currentDialog.Visible = originalVisible end)
+			table.clear(popupConnections)
+		end
+
+		local function restoreDialog()
+			if currentDialog and currentDialog.Parent and originallyVisible ~= nil then
+				updating = true
+				pcall(function() currentDialog.Visible = originallyVisible end)
+				updating = false
 			end
 			currentDialog = nil
-			originalVisible = nil
+			originallyVisible = nil
 		end
 
-		local function bindDialog()
-			if not enabled then return end
-			local app = gui:FindFirstChild("DialogApp")
+		local function findDialog()
+			local app = playerGui:FindFirstChild("DialogApp")
 			local dialog = app and app:FindFirstChild("Dialog")
-			if not dialog or not dialog:IsA("GuiObject") then return end
-			if currentDialog == dialog then
-				if dialog.Visible then dialog.Visible = false end
-				return
+			if dialog and dialog:IsA("GuiObject") then
+				return dialog
 			end
-			clearDialog()
-			currentDialog = dialog
-			originalVisible = dialog.Visible
-			dialogConnection = dialog:GetPropertyChangedSignal("Visible"):Connect(function()
-				if enabled and dialog.Visible then dialog.Visible = false end
-			end)
-			dialog.Visible = false
+			return nil
 		end
 
-		local function stopPopupHiding()
-			enabled = false
-			if addedConnection then addedConnection:Disconnect(); addedConnection = nil end
-			clearDialog()
+		local function hideDialog()
+			if not active then return end
+			local dialog = findDialog()
+			if not dialog then return end
+			if currentDialog ~= dialog then
+				-- When the game recreates its dialog, detach only the old listener.
+				if currentDialogConnection then
+					pcall(function() currentDialogConnection:Disconnect() end)
+				end
+				restoreDialog()
+				currentDialog = dialog
+				originallyVisible = dialog.Visible
+				currentDialogConnection = dialog:GetPropertyChangedSignal("Visible"):Connect(function()
+					if active and not updating and dialog.Visible then
+						updating = true
+						dialog.Visible = false
+						updating = false
+					end
+				end)
+				table.insert(popupConnections, currentDialogConnection)
+			end
+			if dialog.Visible then
+				updating = true
+				dialog.Visible = false
+				updating = false
+			end
+		end
+
+		local function setPopupDisabled(value)
+			active = value == true
+			disconnectPopupConnections()
+			currentDialogConnection = nil
+			restoreDialog()
+			if not active then return end
+			table.insert(popupConnections, playerGui.DescendantAdded:Connect(function(obj)
+				if obj.Name == "DialogApp" or obj.Name == "Dialog" then
+					task.defer(hideDialog)
+				end
+			end))
+			hideDialog()
 		end
 
 		local env = (getgenv and getgenv()) or _G
 		if type(env.__CubixStopTradePopupHiding) == "function" then
 			pcall(env.__CubixStopTradePopupHiding)
 		end
-		env.__CubixStopTradePopupHiding = stopPopupHiding
-
-		TradeTab:CreateToggle({
-			Name = "Disable Trade Popups",
-			CurrentValue = true,
-			Flag = "CubixDisableTradePopups",
-			Callback = function(value)
-				if value == true then
-					enabled = true
-					bindDialog()
-					if not addedConnection then
-						addedConnection = gui.DescendantAdded:Connect(function(obj)
-							if obj.Name == "Dialog" or obj.Name == "DialogApp" then
-								task.defer(bindDialog)
-							end
-						end)
-					end
-				else
-					stopPopupHiding()
-				end
-			end,
-		})
-		bindDialog()
-		if not addedConnection then
-			addedConnection = gui.DescendantAdded:Connect(function(obj)
-				if obj.Name == "Dialog" or obj.Name == "DialogApp" then
-					task.defer(bindDialog)
-				end
-			end)
+		env.__CubixStopTradePopupHiding = function()
+			env.__CubixPopupStartupToken = (env.__CubixPopupStartupToken or 0) + 1
+			setPopupDisabled(false)
 		end
+
+		local popupToggle = TradeTab:CreateToggle({
+			Name = "Disable Trade Popups",
+			CurrentValue = false,
+			Flag = "CubixDisableTradePopupsDialogOnlyV5",
+			Callback = setPopupDisabled,
+		})
+
+		-- Autoexecute-safe: wait until the character and the game dialog exist.
+		-- Only DialogApp.Dialog is ever changed by the popup controller.
+		env.__CubixPopupStartupToken = (env.__CubixPopupStartupToken or 0) + 1
+		local myToken = env.__CubixPopupStartupToken
+		task.spawn(function()
+			local character = plr.Character or plr.CharacterAdded:Wait()
+			if not character:WaitForChild("Humanoid", 30)
+				or not character:WaitForChild("HumanoidRootPart", 30) then
+				warn("[Cubix Popup] Character not ready; leaving popup toggle off")
+				return
+			end
+			local dialogApp = playerGui:WaitForChild("DialogApp", 40)
+			local dialog = dialogApp and dialogApp:WaitForChild("Dialog", 30)
+			if not (dialog and dialog:IsA("GuiObject")) then
+				warn("[Cubix Popup] Dialog not ready; leaving popup toggle off")
+				return
+			end
+			task.wait(2) -- Extra time for Adopt Me's UI initialization
+			if env.__CubixPopupStartupToken ~= myToken then return end
+			pcall(function() popupToggle:Set(true) end)
+			setPopupDisabled(true)
+			print("[Cubix Popup] Character and UI loaded; DialogApp.Dialog hiding enabled")
+		end)
 	end
 
 	tradeDropdown = TradeTab:CreateDropdown({
@@ -2968,110 +3089,134 @@ local function loadMain()
 		MultipleOptions = true,
 		Flag = "TradeHouseTargets",
 		Callback = function(opts)
-			table.clear(tradeSelections)
-			for _, name in ipairs(opts or {}) do
+			if syncingTradeDropdown then return end
+			local nextSelection = {}
+			for _, name in ipairs(type(opts) == "table" and opts or {}) do
 				local id = ownedHouseMap[name]
-				if id then tradeSelections[id] = name end
+				if id and getOwnedHouseById(id) then nextSelection[id] = name end
 			end
-			local selectedCount = 0
-			for _ in pairs(tradeSelections) do selectedCount += 1 end
+			table.clear(tradeSelections)
+			for id, name in pairs(nextSelection) do tradeSelections[id] = name end
+			local selectedCount = #selectedTradeLabels()
 			if selectedCount ~= lastTradeCount then
 				lastTradeCount = selectedCount
-				Rayfield:Notify({ Title = "Trading", Content = selectedCount .. " houses selected" })
+				setTradingStatus(selectedCount .. " selected")
 			end
 		end,
 	})
 
 	local function processTrade()
-		if tradingRunning then return end
+		if tradingRunning then
+			setTradingStatus("Queue is already running")
+			return
+		end
+		refreshOwnedHouses()
+		if #selectedTradeLabels() == 0 then
+			setTradingStatus("No houses selected")
+			return
+		end
+
+		tradingGeneration += 1
+		local generation = tradingGeneration
 		tradingRunning = true
-
-		Rayfield:Notify({
-			Title = "Trading",
-			Content = "Started dynamic queue",
-			Duration = 3
-		})
-
+		local function active()
+			return tradingRunning and generation == tradingGeneration
+		end
+		setTradingStatus("Started | " .. #selectedTradeLabels() .. " queued")
 		task.spawn(function()
-			while tradingRunning do
-				refreshOwnedHouses()
+			local completed, failed = 0, 0
+			local ok, err = pcall(function()
+				while active() do
+					refreshOwnedHouses()
+					if not active() then break end
+					local ids = {}
+					for id in pairs(tradeSelections) do table.insert(ids, id) end
+					table.sort(ids, function(x,y)
+						return tostring(ownedHouseLabelById[x] or x) < tostring(ownedHouseLabelById[y] or y)
+					end)
+					if #ids == 0 then break end
 
-				local currentQueue = {}
+					local id = ids[1]
+					local name = tradeSelections[id]
+					if not getOwnedHouseById(id) then
+						removeTradeSelection(id)
+						setTradingStatus(tostring(name) .. " no longer owned; deselected")
+						continue
+					end
+					setTradingStatus("Spawning " .. tostring(name) .. " | " .. #ids .. " remaining")
+					local spawnOK, spawnErr = pcall(function()
+						if active() then Router.get("HousingAPI/SpawnHouse"):FireServer(id) end
+					end)
+					if not active() then break end
+					if not spawnOK then
+						failed += 1
+						warn("[Cubix Trading] Spawn failed:", spawnErr)
+						setTradingStatus(tostring(name) .. " spawn failed; queue stopped")
+						break
+					end
 
-				for id, _ in pairs(tradeSelections) do
-					table.insert(currentQueue, id)
+					for _ = 1, 20 do
+						if not active() or not tradeSelections[id] then break end
+						task.wait(0.25)
+					end
+					if not active() then break end
+					if not tradeSelections[id] then continue end
+					if not getOwnedHouseById(id) then
+						removeTradeSelection(id)
+						setTradingStatus(tostring(name) .. " no longer owned; deselected")
+						continue
+					end
+
+					setTradingStatus("Listing " .. tostring(name))
+					local listOK, listResult = pcall(function()
+						if active() then return Router.get("HousingAPI/ListHouse"):InvokeServer(id) end
+					end)
+					if not active() then break end
+					if not listOK or listResult == false then
+						failed += 1
+						setTradingStatus(tostring(name) .. " listing failed; queue stopped")
+						break
+					end
+
+					setTradingStatus("Waiting for " .. tostring(name) .. " to trade")
+					local gone, reason = waitUntilHouseGone(id, 300, function()
+						return active() and tradeSelections[id] ~= nil
+					end)
+					if not active() then break end
+					if gone then
+						-- Confirm disappearance persists before counting a successful trade.
+						task.wait(1.5)
+						if not active() then break end
+						if not getOwnedHouseById(id) then
+							completed += 1
+							removeTradeSelection(id)
+							refreshOwnedHouses()
+							setTradingStatus(tostring(name) .. " traded; automatically deselected")
+						else
+							setTradingStatus(tostring(name) .. " still owned; queue stopped")
+							break
+						end
+					elseif reason == "timeout" then
+						setTradingStatus(tostring(name) .. " timed out; not confirmed traded, still selected")
+						break
+					else
+						setTradingStatus(tostring(name) .. " deselected; waiting cancelled")
+					end
+					if active() then task.wait(0.5) end
 				end
-
-				if #currentQueue == 0 then
-					Rayfield:Notify({
-						Title = "Trading",
-						Content = "Queue finished ✅",
-						Duration = 3
-					})
-					break
-				end
-
-				if not tradingRunning then break end
-				local id = currentQueue[1]
-				local name = tradeSelections[id]
-				if not name then
-					task.wait()
-					continue
-				end
-
-				Rayfield:Notify({
-					Title = "Trading",
-					Content = "Spawning " .. name,
-					Duration = 3
-				})
-
-				local spawnSuccess = pcall(function()
-					Router.get("HousingAPI/SpawnHouse"):FireServer(id)
-				end)
-
-				if not spawnSuccess then
-					Rayfield:Notify({ Title = "Trading", Content = "Failed to spawn " .. name .. " ❌; skipped", Duration = 4 })
-					tradeSelections[id] = nil
-					task.wait(1)
-					continue
-				end
-
-				task.wait(5)
-
-				Rayfield:Notify({
-					Title = "Trading",
-					Content = "Listing " .. name,
-					Duration = 3
-				})
-
-				local listSuccess = pcall(function()
-					Router.get("HousingAPI/ListHouse"):InvokeServer(id)
-				end)
-
-				if not listSuccess then
-					Rayfield:Notify({ Title = "Trading", Content = "Failed to list " .. name .. " ❌; skipped", Duration = 4 })
-					tradeSelections[id] = nil
-					task.wait(1)
-					continue
-				end
-
-				if waitUntilHouseGone(id, 300, function() return tradingRunning end) then
-					Rayfield:Notify({
-						Title = "Trading",
-						Content = name .. " traded ✔",
-						Duration = 3
-					})
-
-					tradeSelections[id] = nil
+			end)
+			if not ok then warn("[Cubix Trading] Queue error:", err) end
+			if generation == tradingGeneration then
+				tradingRunning = false
+				local remaining = #selectedTradeLabels()
+				if not ok then
+					setTradingStatus("Queue error; " .. remaining .. " houses still selected")
+				elseif remaining == 0 then
+					setTradingStatus("Finished | " .. completed .. " traded | 0 remaining")
 				else
-					Rayfield:Notify({ Title = "Trading", Content = name .. " timeout ❌; removed from queue", Duration = 4 })
-					tradeSelections[id] = nil
+					setTradingStatus("Stopped | " .. completed .. " traded | " .. remaining .. " still selected")
 				end
-
-				task.wait(1)
 			end
-
-			tradingRunning = false
 		end)
 	end
 
@@ -3345,17 +3490,17 @@ local function loadMain()
 	TradeTab:CreateButton({ Name = "Start Trading Queue", Callback = processTrade })
 
 	TradeTab:CreateButton({
+		Name = "Stop Trading Queue",
+		Callback = function()
+			stopTrading("Stopped manually; remaining selections preserved", false)
+		end,
+	})
+
+	TradeTab:CreateButton({
 		Name = "Clear Queue",
 		Callback = function()
-			tradingRunning = false
-			table.clear(tradeSelections)
-			lastTradeCount = 0
-			pcall(function()
-				if tradeDropdown then
-					tradeDropdown:Refresh(ownedHouseList, true)
-				end
-			end)
-			Rayfield:Notify({ Title = "Trading", Content = "Queue cleared & stopped 🛑" })
+			stopTrading("Queue cleared and stopped", true)
+			Rayfield:Notify({ Title = "Trading", Content = "Queue cleared and stopped", Duration = 3 })
 		end,
 	})
 
@@ -3374,30 +3519,6 @@ local function loadMain()
 		return c
 	end
 
-	local function getCurrentInteriorModel()
-		for _, v in pairs(workspace:GetChildren()) do
-			if v.Name:lower():find("interior") and v:IsA("Model") and v.PrimaryPart then
-				return v
-			end
-		end
-		return nil
-	end
-
-	local function _toRelativeCFrame(worldCf)
-		local interior = getCurrentInteriorModel()
-		if interior and interior.PrimaryPart then
-			return interior.PrimaryPart.CFrame:ToObjectSpace(worldCf)
-		end
-		return worldCf
-	end
-
-	local function _toWorldCFrame(relativeCf)
-		local interior = getCurrentInteriorModel()
-		if interior and interior.PrimaryPart then
-			return interior.PrimaryPart.CFrame:ToWorldSpace(relativeCf)
-		end
-		return relativeCf
-	end
 
 	local function deepCopy(tbl)
 		if type(tbl) ~= "table" then return tbl end
@@ -3406,10 +3527,10 @@ local function loadMain()
 		return t
 	end
 
-	compatibleLabel(Tab, "If you are using glitch houses, use the slow paste. And if you are using normal houses, use the fast paste. If you use it on higher builds expect lagging or crashing.",
+	Tab:CreateLabel("If you are using glitch houses, use the slow paste. And if you are using normal houses, use the fast paste. If you use it on higher builds expect lagging or crashing.",
 		"info"
 	)
-	compatibleLabel(Tab, "Do not Touch", "info")
+	Tab:CreateLabel("Do not Touch", "info")
 
 	Pastetextures = Tab:CreateToggle({
 		Name = "Paste textures",
@@ -3456,10 +3577,10 @@ local function loadMain()
 		local success, player_data = pcall(function()
 			return cd.get_data()[plr.Name]
 		end)
-		if not success or not player_data then
-			return false, false
+		if not success or not player_data or tonumber(player_data.money) == nil then
+			return false, true
 		end
-		return db_entry.cost <= (player_data.money or 0), true
+		return db_entry.cost <= tonumber(player_data.money), true
 	end
 
 	local function getPlayerMoney()
@@ -4560,7 +4681,7 @@ local function loadMain()
 	local userPastebinUsername = ""
 	local userPastebinPassword = ""
 
-	compatibleLabel(PastebinTab, "TO GET DEV API KEY YOU NEED TO MAKE ACCOUNT ON PASTEBIN AFTER THAT GO TO https://pastebin.com/doc_api AND COPY YOUR DEV API KEY",
+	PastebinTab:CreateLabel("TO GET DEV API KEY YOU NEED TO MAKE ACCOUNT ON PASTEBIN AFTER THAT GO TO https://pastebin.com/doc_api AND COPY YOUR DEV API KEY",
 		"info"
 	)
 	PastebinTab:CreateDivider()
@@ -4896,7 +5017,7 @@ local function loadMain()
 		local outputName = ""
 		local busy = false
 		local sourceDropdown
-		local status = compatibleLabel(ConverterTab, "Put source JSON files in HouseFS/Convert, then refresh the list.", "info")
+		local status = ConverterTab:CreateLabel("Put source JSON files in HouseFS/Convert, then refresh the list.", "info")
 
 		local function ensureFolders()
 			for _, path in ipairs({houseFSPath, convertPath, houseFilesPath}) do
@@ -5152,6 +5273,7 @@ local function loadMain()
 	end)
 
 	pasteHistory = safeReadJSON(pasteHistoryPath) or {}
+	freshPurchases = safeReadJSON(freshPurchasesPath) or {}
 	pasteCheckpoint = safeReadJSON(pasteCheckpointPath)
 	if pasteCheckpoint and pasteCheckpoint.state == "idle" then pasteCheckpoint = nil end
 	refreshOwnedHouses()
