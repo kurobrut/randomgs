@@ -314,7 +314,6 @@ local function loadMain()
 	local ownedHouseTypeMap = {}
 	local ownedDropdown
 	local tradeDropdown
-	local syncTradeDropdown
 	local autoPasteDropdown
 	local autoPasteSelections = {}
 	local pendingAutoPasteTargetIds = {}
@@ -433,8 +432,8 @@ local function loadMain()
 		if ownedDropdown then
 			pcall(function() ownedDropdown:Refresh(ownedHouseList, true) end)
 		end
-		if tradeDropdown and syncTradeDropdown then
-			syncTradeDropdown(true)
+		if tradeDropdown then
+			pcall(function() tradeDropdown:Refresh(ownedHouseList, true) end)
 		end
 		if autoPasteDropdown then
 			autoPasteApplyingSavedTargets = true
@@ -2914,56 +2913,6 @@ local function loadMain()
 	local tradingRunning = false
 	local tradeSelections = {}
 	local lastTradeCount = -1
-	local tradingGeneration = 0
-	local syncingTradeDropdown = false
-	local tradeStatusLabel = TradeTab:CreateLabel("Trading Status: Idle", "activity")
-
-	local function setTradingStatus(message)
-		pcall(function() tradeStatusLabel:Set("Trading Status: " .. tostring(message)) end)
-		print("[Cubix Trading] " .. tostring(message))
-	end
-
-	local function selectedTradeLabels()
-		local labels = {}
-		for id in pairs(tradeSelections) do
-			local label = ownedHouseLabelById[id]
-			if label then
-				tradeSelections[id] = label
-				table.insert(labels, label)
-			else
-				tradeSelections[id] = nil -- No longer in owned-house inventory
-			end
-		end
-		table.sort(labels)
-		return labels
-	end
-
-	syncTradeDropdown = function(refreshOptions)
-		if not tradeDropdown then return end
-		local labels = selectedTradeLabels()
-		local count = #labels
-		lastTradeCount = count
-		syncingTradeDropdown = true
-		local ok, err = pcall(function()
-			if refreshOptions then tradeDropdown:Refresh(ownedHouseList, true) end
-			tradeDropdown:Set(labels)
-		end)
-		syncingTradeDropdown = false
-		if not ok then warn("[Cubix Trading] Dropdown synchronization failed:", err) end
-	end
-
-	local function removeTradeSelection(id)
-		tradeSelections[id] = nil
-		syncTradeDropdown(false)
-	end
-
-	local function stopTrading(message, clearSelections)
-		tradingRunning = false
-		tradingGeneration += 1
-		if clearSelections then table.clear(tradeSelections) end
-		syncTradeDropdown(false)
-		setTradingStatus(message or "Stopped")
-	end
 
 	do
 		-- Reference Auto Trade popup behavior: hide DialogApp.Dialog only.
@@ -3092,119 +3041,110 @@ local function loadMain()
 		MultipleOptions = true,
 		Flag = "TradeHouseTargets",
 		Callback = function(opts)
-			if syncingTradeDropdown then return end
-			local nextSelection = {}
-			for _, name in ipairs(type(opts) == "table" and opts or {}) do
-				local id = ownedHouseMap[name]
-				if id and getOwnedHouseById(id) then nextSelection[id] = name end
-			end
 			table.clear(tradeSelections)
-			for id, name in pairs(nextSelection) do tradeSelections[id] = name end
-			local selectedCount = #selectedTradeLabels()
+			for _, name in ipairs(opts or {}) do
+				local id = ownedHouseMap[name]
+				if id then tradeSelections[id] = name end
+			end
+			local selectedCount = 0
+			for _ in pairs(tradeSelections) do selectedCount += 1 end
 			if selectedCount ~= lastTradeCount then
 				lastTradeCount = selectedCount
-				setTradingStatus(selectedCount .. " selected")
+				Rayfield:Notify({ Title = "Trading", Content = selectedCount .. " houses selected" })
 			end
 		end,
 	})
 
 	local function processTrade()
-		if tradingRunning then
-			setTradingStatus("Queue is already running")
-			return
-		end
-		refreshOwnedHouses()
-		if #selectedTradeLabels() == 0 then
-			setTradingStatus("No houses selected")
-			return
-		end
-
-		tradingGeneration += 1
-		local myGeneration = tradingGeneration
+		if tradingRunning then return end
 		tradingRunning = true
-		local function stillRunning()
-			return tradingRunning and myGeneration == tradingGeneration
-		end
-		setTradingStatus("Started | " .. #selectedTradeLabels() .. " queued")
+
+		Rayfield:Notify({
+			Title = "Trading",
+			Content = "Started dynamic queue",
+			Duration = 3
+		})
+
 		task.spawn(function()
-			while stillRunning() do
+			while tradingRunning do
 				refreshOwnedHouses()
-				if not stillRunning() then break end
-				local ids = {}
-				for id in pairs(tradeSelections) do table.insert(ids, id) end
-				table.sort(ids, function(x, y)
-					return tostring(ownedHouseLabelById[x] or x) < tostring(ownedHouseLabelById[y] or y)
-				end)
-				if #ids == 0 then
-					stopTrading("Queue finished - no selected houses left", false)
+
+				local currentQueue = {}
+
+				for id, _ in pairs(tradeSelections) do
+					table.insert(currentQueue, id)
+				end
+
+				if #currentQueue == 0 then
+					Rayfield:Notify({
+						Title = "Trading",
+						Content = "Queue finished ✅",
+						Duration = 3
+					})
 					break
 				end
 
-				local id = ids[1]
+				if not tradingRunning then break end
+				local id = currentQueue[1]
 				local name = tradeSelections[id]
-				if not getOwnedHouseById(id) then
-					setTradingStatus(tostring(name) .. " no longer owned; deselected")
-					removeTradeSelection(id)
+				if not name then
+					task.wait()
 					continue
 				end
-				setTradingStatus("Spawning " .. tostring(name) .. " | " .. #ids .. " remaining")
-				local spawnOK, spawnErr = pcall(function()
-					if not stillRunning() then return end
+
+				Rayfield:Notify({
+					Title = "Trading",
+					Content = "Spawning " .. name,
+					Duration = 3
+				})
+
+				local spawnSuccess = pcall(function()
 					Router.get("HousingAPI/SpawnHouse"):FireServer(id)
 				end)
-				if not stillRunning() then break end
-				if not spawnOK then
-					warn("[Cubix Trading] Spawn failed:", spawnErr)
-					setTradingStatus(tostring(name) .. " spawn failed; deselected")
-					removeTradeSelection(id)
+
+				if not spawnSuccess then
+					Rayfield:Notify({ Title = "Trading", Content = "Failed to spawn " .. name .. " ❌; skipped", Duration = 4 })
+					tradeSelections[id] = nil
+					task.wait(1)
 					continue
 				end
 
-				for _ = 1, 20 do
-					if not stillRunning() or not tradeSelections[id] then break end
-					task.wait(0.25)
-				end
-				if not stillRunning() then break end
-				if not tradeSelections[id] then continue end
-				if not getOwnedHouseById(id) then
-					removeTradeSelection(id)
-					setTradingStatus(tostring(name) .. " no longer owned; deselected")
-					continue
-				end
+				task.wait(5)
 
-				setTradingStatus("Listing " .. tostring(name))
-				local listOK, listResult = pcall(function()
-					if not stillRunning() then return nil end
-					return Router.get("HousingAPI/ListHouse"):InvokeServer(id)
+				Rayfield:Notify({
+					Title = "Trading",
+					Content = "Listing " .. name,
+					Duration = 3
+				})
+
+				local listSuccess = pcall(function()
+					Router.get("HousingAPI/ListHouse"):InvokeServer(id)
 				end)
-				if not stillRunning() then break end
-				if not listOK or listResult == false then
-					setTradingStatus(tostring(name) .. " listing failed; deselected")
-					removeTradeSelection(id)
+
+				if not listSuccess then
+					Rayfield:Notify({ Title = "Trading", Content = "Failed to list " .. name .. " ❌; skipped", Duration = 4 })
+					tradeSelections[id] = nil
+					task.wait(1)
 					continue
 				end
 
-				setTradingStatus("Waiting for " .. tostring(name) .. " to trade")
-				local gone, reason = waitUntilHouseGone(id, 300, function()
-					return stillRunning() and tradeSelections[id] ~= nil
-				end)
-				if not stillRunning() then break end
-				if gone then
-					setTradingStatus(tostring(name) .. " traded / removed from inventory")
-					removeTradeSelection(id)
-					refreshOwnedHouses()
-				elseif reason == "timeout" then
-					setTradingStatus(tostring(name) .. " timed out (NOT confirmed traded); deselected")
-					removeTradeSelection(id)
+				if waitUntilHouseGone(id, 300, function() return tradingRunning end) then
+					Rayfield:Notify({
+						Title = "Trading",
+						Content = name .. " traded ✔",
+						Duration = 3
+					})
+
+					tradeSelections[id] = nil
 				else
-					setTradingStatus(tostring(name) .. " cancelled or deselected")
+					Rayfield:Notify({ Title = "Trading", Content = name .. " timeout ❌; removed from queue", Duration = 4 })
+					tradeSelections[id] = nil
 				end
-				if stillRunning() then task.wait(0.5) end
+
+				task.wait(1)
 			end
-			if myGeneration == tradingGeneration then
-				tradingRunning = false
-				setTradingStatus("Stopped | " .. #selectedTradeLabels() .. " still selected")
-			end
+
+			tradingRunning = false
 		end)
 	end
 
@@ -3478,17 +3418,17 @@ local function loadMain()
 	TradeTab:CreateButton({ Name = "Start Trading Queue", Callback = processTrade })
 
 	TradeTab:CreateButton({
-		Name = "Stop Trading Queue",
-		Callback = function()
-			stopTrading("Stopped manually; remaining selections preserved", false)
-		end,
-	})
-
-	TradeTab:CreateButton({
 		Name = "Clear Queue",
 		Callback = function()
-			stopTrading("Queue cleared and stopped", true)
-			Rayfield:Notify({ Title = "Trading", Content = "Queue cleared and stopped", Duration = 3 })
+			tradingRunning = false
+			table.clear(tradeSelections)
+			lastTradeCount = 0
+			pcall(function()
+				if tradeDropdown then
+					tradeDropdown:Refresh(ownedHouseList, true)
+				end
+			end)
+			Rayfield:Notify({ Title = "Trading", Content = "Queue cleared & stopped 🛑" })
 		end,
 	})
 
