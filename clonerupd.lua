@@ -117,6 +117,8 @@ local function ensureTradeLicenseInHotbar()
 end
 
 local function loadMain()
+	-- Shared helper namespace: limits active Luau registers in loadMain.
+	local CubixHelpers = {}
 	local fetchOk, rayfieldSource = pcall(function()
 		return game:HttpGet("https://sirius.menu/rayfield")
 	end)
@@ -190,11 +192,11 @@ local function loadMain()
 	local scanInfoVisible = false
 	local scanInfoValues = { 0, 0, 0, 0, "No", "-" }
 
-	local function getScanInfoParent()
+	function CubixHelpers.getScanInfoParent()
 		return plr:WaitForChild("PlayerGui")
 	end
 
-	local function createScanInfoGui()
+	function CubixHelpers.createScanInfoGui()
 		if scanInfoGui then return end
 
 		scanInfoGui = Instance.new("ScreenGui")
@@ -202,7 +204,7 @@ local function loadMain()
 		scanInfoGui.ResetOnSpawn = false
 		scanInfoGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 		scanInfoGui.Enabled = scanInfoVisible
-		scanInfoGui.Parent = getScanInfoParent()
+		scanInfoGui.Parent = CubixHelpers.getScanInfoParent()
 
 		scanInfoFrame = Instance.new("Frame")
 		scanInfoFrame.Name = "ScanInformation"
@@ -250,7 +252,7 @@ local function loadMain()
 		end
 	end
 
-	local function updateScanInfoGui(f_count, f_cost, t_count, t_cost, amb, typ)
+	function CubixHelpers.updateScanInfoGui(f_count, f_cost, t_count, t_cost, amb, typ)
 		if not scanInfoGui then return end
 		scanInfoLabels.Furniture.Text = "Furniture: " .. f_count .. " ($" .. f_cost .. ")"
 		scanInfoLabels.Textures.Text = "Textures: " .. t_count .. " ($" .. t_cost .. ")"
@@ -263,9 +265,9 @@ local function loadMain()
 	local prog_label = Manager:CreateLabel("Building Prog: -", "trending-up")
 	local item_label = Manager:CreateLabel("Items: -", "box")
 
-	local function setscaninfo(f_count, f_cost, t_count, t_cost, amb, typ)
+	function CubixHelpers.setscaninfo(f_count, f_cost, t_count, t_cost, amb, typ)
 		scanInfoValues = { f_count, f_cost, t_count, t_cost, amb, typ }
-		updateScanInfoGui(f_count, f_cost, t_count, t_cost, amb, typ)
+		CubixHelpers.updateScanInfoGui(f_count, f_cost, t_count, t_cost, amb, typ)
 		pcall(function()
 			furniture_label:Set("House Furniture: " .. f_count .. " ($" .. f_cost .. ")")
 			textures_label:Set("House Textures: " .. t_count .. " ($" .. t_cost .. ")")
@@ -280,33 +282,33 @@ local function loadMain()
 		Flag = "ShowScanInformationOverlay",
 		Callback = function(value)
 			scanInfoVisible = value
-			createScanInfoGui()
+			CubixHelpers.createScanInfoGui()
 			scanInfoGui.Enabled = value
 			if value then
-				updateScanInfoGui(table.unpack(scanInfoValues))
+				CubixHelpers.updateScanInfoGui(table.unpack(scanInfoValues))
 			end
 		end,
 	})
 
-	local function updatestatus(s)
+	function CubixHelpers.updatestatus(s)
 		pcall(function()
 			status_label:Set("Building Status: " .. s)
 		end)
 	end
-	local function updateprog(p)
+	function CubixHelpers.updateprog(p)
 		pcall(function()
 			prog_label:Set("Building Prog: " .. p)
 		end)
 	end
-	local function updateitem(i)
+	function CubixHelpers.updateitem(i)
 		pcall(function()
 			item_label:Set("Items: " .. i)
 		end)
 	end
 
-	updatestatus("Idle")
-	updateprog("-")
-	updateitem("-")
+	CubixHelpers.updatestatus("Idle")
+	CubixHelpers.updateprog("-")
+	CubixHelpers.updateitem("-")
 
 	local ownedHouseList = {}
 	local ownedHouseMap = {}
@@ -321,7 +323,7 @@ local function loadMain()
 	local restorePendingAutoPasteTargets
 	local autoPasteApplyingSavedTargets = false
 
-	local function resolveHouseType(typeValue)
+	function CubixHelpers.resolveHouseType(typeValue)
 		if not typeValue or typeValue == "-" or typeValue == "Unknown" or typeValue == "" then
 			return nil
 		end
@@ -345,7 +347,7 @@ local function loadMain()
 		return low
 	end
 
-	local function resolveExactHouseType(typeValue)
+	function CubixHelpers.resolveExactHouseType(typeValue)
 		if not typeValue or typeValue == "-" or typeValue == "Unknown" then return nil end
 		for kind, data in pairs(housedb) do
 			if kind == typeValue then return kind end
@@ -356,14 +358,14 @@ local function loadMain()
 		return typeValue
 	end
 
-	local function getExactHouseDisplayName(kind)
+	function CubixHelpers.getExactHouseDisplayName(kind)
 		for k, data in pairs(housedb) do
 			if k == kind then return data.name or kind end
 		end
 		return kind
 	end
 
-	local function isExactSameHouseType(a, b)
+	function CubixHelpers.isExactSameHouseType(a, b)
 		if a == b then return true end
 		local function getName(val)
 			for kind, data in pairs(housedb) do
@@ -375,7 +377,7 @@ local function loadMain()
 		return string.lower(getName(a)) == string.lower(getName(b))
 	end
 
-	local function getSavedHouseExactType(houseData)
+	function CubixHelpers.getSavedHouseExactType(houseData)
 		local savedType = "-"
 		local savedKind = nil
 		local savedName = nil
@@ -385,21 +387,21 @@ local function loadMain()
 			savedName = houseData.name
 		end)
 
-		local resolvedSaved = resolveExactHouseType(savedType)
-		if not resolvedSaved and savedKind then resolvedSaved = resolveExactHouseType(savedKind) end
-		if not resolvedSaved and savedName then resolvedSaved = resolveExactHouseType(savedName) end
+		local resolvedSaved = CubixHelpers.resolveExactHouseType(savedType)
+		if not resolvedSaved and savedKind then resolvedSaved = CubixHelpers.resolveExactHouseType(savedKind) end
+		if not resolvedSaved and savedName then resolvedSaved = CubixHelpers.resolveExactHouseType(savedName) end
 		return resolvedSaved
 	end
 
-	local function getInteriorExactType(houseInterior)
+	function CubixHelpers.getInteriorExactType(houseInterior)
 		local currentType = "-"
 		pcall(function()
 			currentType = houseInterior.building_type or "-"
 		end)
-		return resolveExactHouseType(currentType)
+		return CubixHelpers.resolveExactHouseType(currentType)
 	end
 
-	local function refreshOwnedHouses()
+	function CubixHelpers.refreshOwnedHouses()
 		table.clear(ownedHouseList)
 		table.clear(ownedHouseMap)
 		table.clear(ownedHouseLabelById)
@@ -425,7 +427,7 @@ local function loadMain()
 			ownedHouseMap[label] = house.house_id
 			ownedHouseLabelById[house.house_id] = label
 			local houseType = house.building_type or house.kind or house.type or "unknown"
-			ownedHouseTypeMap[house.house_id] = resolveExactHouseType(houseType) or resolveHouseType(houseType) or tostring(houseType)
+			ownedHouseTypeMap[house.house_id] = CubixHelpers.resolveExactHouseType(houseType) or CubixHelpers.resolveHouseType(houseType) or tostring(houseType)
 		end
 
 		table.sort(ownedHouseList)
@@ -515,11 +517,11 @@ local function loadMain()
 	local pasteCheckpointPath = houseSettingsPath .. "/paste_checkpoint.json"
 	local pasteHistory = {}
 	local pasteCheckpoint = nil
-	local function safeWriteJSON(path, value)
+	function CubixHelpers.safeWriteJSON(path, value)
 		local ok, err = pcall(function() writefile(path, HttpService:JSONEncode(value)) end)
 		return ok, err
 	end
-	local function safeReadJSON(path)
+	function CubixHelpers.safeReadJSON(path)
 		local ok, result = pcall(function()
 			if not isfile(path) then return nil end
 			return HttpService:JSONDecode(readfile(path))
@@ -527,45 +529,45 @@ local function loadMain()
 		if ok and type(result) == "table" then return result end
 		return nil
 	end
-	local function persistCheckpoint(value)
+	function CubixHelpers.persistCheckpoint(value)
 		pasteCheckpoint = value
-		return safeWriteJSON(pasteCheckpointPath, value or { state = "idle" })
+		return CubixHelpers.safeWriteJSON(pasteCheckpointPath, value or { state = "idle" })
 	end
-	local function saveHistory()
-		return safeWriteJSON(pasteHistoryPath, pasteHistory)
+	function CubixHelpers.saveHistory()
+		return CubixHelpers.safeWriteJSON(pasteHistoryPath, pasteHistory)
 	end
-	local function markFreshPurchase(houseId)
+	function CubixHelpers.markFreshPurchase(houseId)
 		if houseId == nil then return end
 		local key = tostring(houseId)
 		freshPurchases[key] = os.time()
-		local saved, err = safeWriteJSON(freshPurchasesPath, freshPurchases)
+		local saved, err = CubixHelpers.safeWriteJSON(freshPurchasesPath, freshPurchases)
 		if not saved then warn("[Cubix] Could not save newly purchased house:", err) end
 		print("[Cubix] New purchase eligible for paste:", key)
 	end
-	local function wasPreviouslyCompleted(houseId)
+	function CubixHelpers.wasPreviouslyCompleted(houseId)
 		local key = tostring(houseId)
 		return pasteHistory[key] ~= nil and freshPurchases[key] == nil
 	end
-	local function recordPasteSuccess(houseId, houseName, sourceName)
+	function CubixHelpers.recordPasteSuccess(houseId, houseName, sourceName)
 		pasteHistory[tostring(houseId)] = {
 			house_id = tostring(houseId), name = tostring(houseName),
 			source = tostring(sourceName or "Loaded House"), timestamp = os.time()
 		}
-		saveHistory()
+		CubixHelpers.saveHistory()
 		-- The new purchase is now legitimately completed.
 		freshPurchases[tostring(houseId)] = nil
-		safeWriteJSON(freshPurchasesPath, freshPurchases)
-		persistCheckpoint(nil)
+		CubixHelpers.safeWriteJSON(freshPurchasesPath, freshPurchases)
+		CubixHelpers.persistCheckpoint(nil)
 	end
-	local function countFurniture(houseData)
+	function CubixHelpers.countFurniture(houseData)
 		local n = 0
 		for _ in pairs((houseData and houseData.furniture) or {}) do n += 1 end
 		return n
 	end
-	local function queueDataPath(id)
+	function CubixHelpers.queueDataPath(id)
 		return queueDataFolder .. "/" .. tostring(id) .. ".json"
 	end
-	local function ensureQueueEntryId(entry)
+	function CubixHelpers.ensureQueueEntryId(entry)
 		if not entry.queueId then entry.queueId = HttpService:GenerateGUID(false) end
 		return entry.queueId
 	end
@@ -585,7 +587,7 @@ local function loadMain()
 		if not isfolder(queueDataFolder) then makefolder(queueDataFolder) end
 	end)
 
-	local function deserializeFileValue(value, context)
+	function CubixHelpers.deserializeFileValue(value, context)
 		if type(value) ~= "table" then return value end
 
 		if context == "colors" then
@@ -595,7 +597,7 @@ local function loadMain()
 				if not index or index < 1 or index % 1 ~= 0 or index == math.huge then
 					error("Invalid furniture color index: " .. tostring(key))
 				end
-				colors[index] = deserializeFileValue(color, "color")
+				colors[index] = CubixHelpers.deserializeFileValue(color, "color")
 			end
 			return colors
 		end
@@ -639,12 +641,12 @@ local function loadMain()
 			elseif key == "outfit" then
 				nextContext = "preserve"
 			end
-			value[k] = deserializeFileValue(v, nextContext)
+			value[k] = CubixHelpers.deserializeFileValue(v, nextContext)
 		end
 		return value
 	end
 
-	local function convertFileToInternalFormat(decoded)
+	function CubixHelpers.convertFileToInternalFormat(decoded)
 		if decoded.f and type(decoded.f) == "table" and #decoded.f > 0 and decoded.t and decoded.b then
 			local furniture = {}
 			for i, f in ipairs(decoded.f) do
@@ -741,7 +743,7 @@ local function loadMain()
 		return decoded
 	end
 
-	local function loadHouseDataFromFile(filename)
+	function CubixHelpers.loadHouseDataFromFile(filename)
 		filename = tostring(filename or ""):match("([^/\\]+)$") or tostring(filename or "")
 		local filePath = houseFilesPath .. "/" .. filename
 		local success, content = pcall(readfile, filePath)
@@ -776,10 +778,10 @@ local function loadMain()
 			return nil, "Invalid data in file"
 		end
 
-		return deserializeFileValue(convertFileToInternalFormat(decoded)), nil
+		return CubixHelpers.deserializeFileValue(CubixHelpers.convertFileToInternalFormat(decoded)), nil
 	end
 
-	local function loadHouseDataFromPastebin(pasteValue)
+	function CubixHelpers.loadHouseDataFromPastebin(pasteValue)
 		local input = tostring(pasteValue or ""):gsub("^%s+", ""):gsub("%s+$", "")
 		if input == "" then
 			return nil, "Please enter a Pastebin link or ID"
@@ -818,19 +820,19 @@ local function loadMain()
 			return nil, "Invalid Pastebin JSON"
 		end
 
-		return deserializeFileValue(convertFileToInternalFormat(decoded)), pasteId
+		return CubixHelpers.deserializeFileValue(CubixHelpers.convertFileToInternalFormat(decoded)), pasteId
 	end
 
-	local function getFileHouseType(houseData)
-		return getSavedHouseExactType(houseData) or "Unknown"
+	function CubixHelpers.getFileHouseType(houseData)
+		return CubixHelpers.getSavedHouseExactType(houseData) or "Unknown"
 	end
 
-	local function findMatchingHouse(fileType, candidateIds, usedIds)
+	function CubixHelpers.findMatchingHouse(fileType, candidateIds, usedIds)
 		local fallbackId = nil
 		for _, houseId in ipairs(candidateIds) do
 			if not usedIds[houseId] then
 				local ownedType = ownedHouseTypeMap[houseId]
-				if ownedType and isExactSameHouseType(fileType, ownedType) then
+				if ownedType and CubixHelpers.isExactSameHouseType(fileType, ownedType) then
 					return houseId
 				end
 				if not fallbackId and (not ownedType or ownedType == "unknown" or ownedType == "Unknown") then
@@ -843,7 +845,7 @@ local function loadMain()
 
 	local queueHouseCostCache = setmetatable({}, { __mode = "k" })
 
-	local function getQueueHouseCost(houseData)
+	function CubixHelpers.getQueueHouseCost(houseData)
 		if type(houseData) ~= "table" then
 			return 0
 		end
@@ -875,15 +877,15 @@ local function loadMain()
 		return total
 	end
 
-	local function getQueueTotalCost()
+	function CubixHelpers.getQueueTotalCost()
 		local total = 0
 		for _, entry in ipairs(fileQueue) do
-			total += getQueueHouseCost(entry.houseData)
+			total += CubixHelpers.getQueueHouseCost(entry.houseData)
 		end
 		return total
 	end
 
-	local function setAPFileInfo()
+	function CubixHelpers.setAPFileInfo()
 		if autoPasteFileInfo then
 			pcall(function()
 				autoPasteFileInfo:Set("File Queue: " .. #fileQueue .. " file(s)")
@@ -891,13 +893,13 @@ local function loadMain()
 		end
 		if autoPasteQueueCostLabel then
 			pcall(function()
-				autoPasteQueueCostLabel:Set("Queued Total Cost: $" .. getQueueTotalCost())
+				autoPasteQueueCostLabel:Set("Queued Total Cost: $" .. CubixHelpers.getQueueTotalCost())
 			end)
 		end
 	end
 
 	local updatingPasteSourceUI = false
-	local function setAutoPasteSource(source, fromDropdown)
+	function CubixHelpers.setAutoPasteSource(source, fromDropdown)
 		source = source == "filequeue" and "filequeue" or "loaded"
 		local changed = autoPasteSource ~= source
 		autoPasteSource = source
@@ -918,7 +920,7 @@ local function loadMain()
 		return changed
 	end
 
-	local function rebuildQueueLabel()
+	function CubixHelpers.rebuildQueueLabel()
 		if fqQueueListLabel then
 			local count = #fileQueue
 			local nextEntry = fileQueue[1]
@@ -931,7 +933,7 @@ local function loadMain()
 		if refreshQueueViewer then refreshQueueViewer() end
 	end
 
-	local function createQueueViewer()
+	function CubixHelpers.createQueueViewer()
 		if queueViewerGui and queueViewerGui.Parent then return end
 		local parent = plr:WaitForChild("PlayerGui")
 		local old = parent:FindFirstChild("CubixQueueViewer")
@@ -1068,7 +1070,7 @@ local function loadMain()
 				info.BackgroundTransparency = 1
 				info.TextXAlignment = Enum.TextXAlignment.Left
 				info.TextTruncate = Enum.TextTruncate.AtEnd
-				info.Text = tostring(getFileHouseType(entry.houseData)) .. "  •  $" .. tostring(getQueueHouseCost(entry.houseData))
+				info.Text = tostring(CubixHelpers.getFileHouseType(entry.houseData)) .. "  •  $" .. tostring(CubixHelpers.getQueueHouseCost(entry.houseData))
 				info.TextColor3 = Color3.fromRGB(189, 177, 213)
 				info.Font = Enum.Font.Gotham
 				info.TextSize = 11
@@ -1099,8 +1101,8 @@ local function loadMain()
 					local removeIndex = table.find(fileQueue, entry)
 					if not removeIndex then return end
 					local removed = table.remove(fileQueue, removeIndex)
-					rebuildQueueLabel()
-					setAPFileInfo()
+					CubixHelpers.rebuildQueueLabel()
+					CubixHelpers.setAPFileInfo()
 					local ok, saved, saveErr = pcall(saveAutoPasteConfig)
 					if not ok or not saved then
 						warn("[Cubix Queue] Could not save removal:", tostring(saveErr or saved))
@@ -1116,7 +1118,7 @@ local function loadMain()
 		end
 	end
 
-	local function removeCompletedQueueEntry(entry, expectedIndex)
+	function CubixHelpers.removeCompletedQueueEntry(entry, expectedIndex)
 		if not entry then return false end
 
 		local removeIndex = nil
@@ -1151,8 +1153,8 @@ local function loadMain()
 
 		local removed = table.remove(fileQueue, removeIndex)
 
-		rebuildQueueLabel()
-		setAPFileInfo()
+		CubixHelpers.rebuildQueueLabel()
+		CubixHelpers.setAPFileInfo()
 
 		if type(saveAutoPasteConfig) == "function" then
 			local ok, saved, err = pcall(saveAutoPasteConfig)
@@ -1170,7 +1172,7 @@ local function loadMain()
 		return true
 	end
 
-	local function getAutoPasteTargetNames()
+	function CubixHelpers.getAutoPasteTargetNames()
 		local selectedNames = {}
 		for houseId in pairs(autoPasteSelections) do
 			local label = ownedHouseLabelById[houseId]
@@ -1201,7 +1203,7 @@ local function loadMain()
 		if updateDropdown and restored > 0 and autoPasteDropdown then
 			autoPasteApplyingSavedTargets = true
 			pcall(function()
-				local selected = getAutoPasteTargetNames()
+				local selected = CubixHelpers.getAutoPasteTargetNames()
 				autoPasteDropdown:Set(selected)
 			end)
 			autoPasteApplyingSavedTargets = false
@@ -1209,7 +1211,7 @@ local function loadMain()
 		return restored
 	end
 
-	local function serializeAutoPasteValue(value, seen)
+	function CubixHelpers.serializeAutoPasteValue(value, seen)
 		local valueType = typeof(value)
 		if valueType == "CFrame" then
 			return { __type = "CFrame", components = { value:GetComponents() } }
@@ -1240,12 +1242,12 @@ local function loadMain()
 			local copy = {}
 			if isArray then
 				for i = 1, maxIndex do
-					local serialized = serializeAutoPasteValue(value[i], seen)
+					local serialized = CubixHelpers.serializeAutoPasteValue(value[i], seen)
 					if serialized ~= nil then copy[i] = serialized end
 				end
 			else
 				for key, item in pairs(value) do
-					local serialized = serializeAutoPasteValue(item, seen)
+					local serialized = CubixHelpers.serializeAutoPasteValue(item, seen)
 					if serialized ~= nil then copy[tostring(key)] = serialized end
 				end
 			end
@@ -1286,17 +1288,17 @@ local function loadMain()
 		local slimQueue = {}
 		local sourceIds = {}
 		for _, entry in ipairs(fileQueue) do
-			local id = ensureQueueEntryId(entry)
+			local id = CubixHelpers.ensureQueueEntryId(entry)
 			local sourceId = sourceIds[entry.houseData] or entry.dataId
 			if not sourceId then
 				sourceId = id
 				sourceIds[entry.houseData] = sourceId
 			end
 			entry.dataId = sourceId
-			local dataPath = queueDataPath(sourceId)
+			local dataPath = CubixHelpers.queueDataPath(sourceId)
 			if not isfile(dataPath) then
-				local serialized = serializeAutoPasteValue(entry.houseData)
-				local ok, err = safeWriteJSON(dataPath, serialized)
+				local serialized = CubixHelpers.serializeAutoPasteValue(entry.houseData)
+				local ok, err = CubixHelpers.safeWriteJSON(dataPath, serialized)
 				if not ok then return false, "Could not save queue data: " .. tostring(err) end
 			end
 			table.insert(slimQueue, {
@@ -1335,7 +1337,7 @@ local function loadMain()
 		return true, #fileQueue, #targetIds
 	end
 
-	local function loadAutoPasteConfig()
+	function CubixHelpers.loadAutoPasteConfig()
 		if not isfile(autoPasteConfigPath) then
 			return false, "No saved Auto Paste config found"
 		end
@@ -1350,7 +1352,7 @@ local function loadMain()
 			if type(entry) == "table" then
 				local houseData = entry.houseData
 				if not houseData and entry.dataId then
-					houseData = safeReadJSON(queueDataPath(entry.dataId))
+					houseData = CubixHelpers.safeReadJSON(CubixHelpers.queueDataPath(entry.dataId))
 				end
 				if type(houseData) == "table" then
 					table.insert(fileQueue, {
@@ -1358,7 +1360,7 @@ local function loadMain()
 						dataId = entry.dataId,
 						filename = tostring(entry.filename or entry.sourceName or "Queued House"),
 						sourceName = tostring(entry.sourceName or entry.filename or "Queued House"),
-						houseData = deserializeFileValue(houseData),
+						houseData = CubixHelpers.deserializeFileValue(houseData),
 					})
 				else
 					warn("[Cubix] Queue source data is missing: " .. tostring(entry.filename))
@@ -1387,11 +1389,11 @@ local function loadMain()
 			missingTargets += 1
 		end
 
-		setAutoPasteSource(autoPasteSource)
+		CubixHelpers.setAutoPasteSource(autoPasteSource)
 		if autoPasteDropdown then
 			autoPasteApplyingSavedTargets = true
 			pcall(function()
-				local selected = getAutoPasteTargetNames()
+				local selected = CubixHelpers.getAutoPasteTargetNames()
 				autoPasteDropdown:Refresh(ownedHouseList, true)
 				autoPasteDropdown:Set(selected)
 			end)
@@ -1411,12 +1413,12 @@ local function loadMain()
 		if autoBuyQueuedToggle then
 			pcall(function() autoBuyQueuedToggle:Set(autoBuyQueuedEnabled) end)
 		end
-		rebuildQueueLabel()
-		setAPFileInfo()
+		CubixHelpers.rebuildQueueLabel()
+		CubixHelpers.setAPFileInfo()
 		return true, #fileQueue, missingTargets
 	end
 
-	local function autoSaveAutoPasteConfig()
+	function CubixHelpers.autoSaveAutoPasteConfig()
 
 		autoPasteSaveState.dirty = true
 		if not autoPasteConfigReady then return end
@@ -1438,7 +1440,7 @@ local function loadMain()
 		end)
 	end
 
-	local function refreshFQFileList()
+	function CubixHelpers.refreshFQFileList()
 		table.clear(fqAllFiles)
 		local folderOk, folderExists = pcall(isfolder, houseFilesPath)
 		if not folderOk or not folderExists then
@@ -1472,7 +1474,7 @@ local function loadMain()
 		end
 	end
 
-	refreshOwnedHouses()
+	CubixHelpers.refreshOwnedHouses()
 	AutoPasteTab:CreateLabel("Use the current loaded house, or queue files from HouseFS/Houses.", "info")
 
 	AutoPasteTab:CreateSection("Source")
@@ -1485,8 +1487,8 @@ local function loadMain()
 		Callback = function(opt)
 			if updatingPasteSourceUI then return end
 			local v = (typeof(opt) == "table") and opt[1] or opt
-			local changed = setAutoPasteSource(v == "File Queue" and "filequeue" or "loaded", true)
-			if changed then autoSaveAutoPasteConfig() end
+			local changed = CubixHelpers.setAutoPasteSource(v == "File Queue" and "filequeue" or "loaded", true)
+			if changed then CubixHelpers.autoSaveAutoPasteConfig() end
 		end,
 	})
 
@@ -1495,7 +1497,7 @@ local function loadMain()
 		CurrentValue = false,
 		Callback = function(value)
 			autoBuyQueuedEnabled = value
-			autoSaveAutoPasteConfig()
+			CubixHelpers.autoSaveAutoPasteConfig()
 			if value and #fileQueue > 0 and autoBuyQueuedHouses then
 				autoBuyQueuedHouses()
 			end
@@ -1516,7 +1518,7 @@ local function loadMain()
 					Content = "Copies set to " .. autoPasteQueueCopies,
 					Duration = 2,
 				})
-				autoSaveAutoPasteConfig()
+				CubixHelpers.autoSaveAutoPasteConfig()
 			end
 		end,
 	})
@@ -1527,7 +1529,7 @@ local function loadMain()
 		RemoveTextAfterFocusLost = false,
 		Callback = function(value)
 			fqSearchQuery = tostring(value or "")
-			refreshFQFileList()
+			CubixHelpers.refreshFQFileList()
 		end,
 	})
 
@@ -1543,7 +1545,7 @@ local function loadMain()
 	AutoPasteTab:CreateButton({
 		Name = "Refresh File List",
 		Callback = function()
-			refreshFQFileList()
+			CubixHelpers.refreshFQFileList()
 			Rayfield:Notify({ Title = "File Queue", Content = "File list refreshed", Duration = 2 })
 		end,
 	})
@@ -1559,9 +1561,9 @@ local function loadMain()
 
 			local added = 0
 			for _, filename in ipairs(selected) do
-				local houseData, err = loadHouseDataFromFile(filename)
+				local houseData, err = CubixHelpers.loadHouseDataFromFile(filename)
 				if houseData then
-					setAutoPasteSource("filequeue")
+					CubixHelpers.setAutoPasteSource("filequeue")
 					for copyIndex = 1, autoPasteQueueCopies do
 						local displayName = filename
 						if autoPasteQueueCopies > 1 then
@@ -1572,7 +1574,7 @@ local function loadMain()
 					end
 					Rayfield:Notify({
 						Title = "File Queue",
-						Content = "Added " .. autoPasteQueueCopies .. "x " .. filename .. " [" .. getFileHouseType(houseData) .. "]",
+						Content = "Added " .. autoPasteQueueCopies .. "x " .. filename .. " [" .. CubixHelpers.getFileHouseType(houseData) .. "]",
 						Duration = 2,
 					})
 				else
@@ -1584,9 +1586,9 @@ local function loadMain()
 				end
 			end
 
-			rebuildQueueLabel()
-			setAPFileInfo()
-			autoSaveAutoPasteConfig()
+			CubixHelpers.rebuildQueueLabel()
+			CubixHelpers.setAPFileInfo()
+			CubixHelpers.autoSaveAutoPasteConfig()
 			if added > 0 and autoBuyQueuedEnabled and autoBuyQueuedHouses then
 				autoBuyQueuedHouses()
 			end
@@ -1600,7 +1602,7 @@ local function loadMain()
 	AutoPasteTab:CreateButton({
 		Name = "View Queue (Scrollable)",
 		Callback = function()
-			local ok, err = pcall(createQueueViewer)
+			local ok, err = pcall(CubixHelpers.createQueueViewer)
 			if not ok or not queueViewerGui then
 				warn("[Cubix Queue] Custom window unavailable: " .. tostring(err))
 				pcall(function() Rayfield:Notify({Title="Queue Viewer", Content="Executor denied custom GUI access. Queue still works.", Duration=5}) end)
@@ -1610,7 +1612,7 @@ local function loadMain()
 			refreshQueueViewer()
 		end,
 	})
-	rebuildQueueLabel()
+	CubixHelpers.rebuildQueueLabel()
 
 	AutoPasteTab:CreateInput({
 		Name = "Pastebin Link / ID",
@@ -1618,14 +1620,14 @@ local function loadMain()
 		RemoveTextAfterFocusLost = false,
 		Callback = function(value)
 			autoPastePastebinValue = tostring(value or "")
-			autoSaveAutoPasteConfig()
+			CubixHelpers.autoSaveAutoPasteConfig()
 		end,
 	})
 
 	AutoPasteTab:CreateButton({
 		Name = "Add Pastebin to Queue",
 		Callback = function()
-			local houseData, pasteIdOrErr = loadHouseDataFromPastebin(autoPastePastebinValue)
+			local houseData, pasteIdOrErr = CubixHelpers.loadHouseDataFromPastebin(autoPastePastebinValue)
 			if not houseData then
 				return Rayfield:Notify({
 					Title = "Pastebin Queue",
@@ -1636,7 +1638,7 @@ local function loadMain()
 
 			local pasteId = tostring(pasteIdOrErr)
 			local baseName = "Pastebin_" .. pasteId
-			setAutoPasteSource("filequeue")
+			CubixHelpers.setAutoPasteSource("filequeue")
 			for copyIndex = 1, autoPasteQueueCopies do
 				local displayName = baseName
 				if autoPasteQueueCopies > 1 then
@@ -1648,16 +1650,16 @@ local function loadMain()
 					houseData = houseData,
 				})
 			end
-			rebuildQueueLabel()
-			setAPFileInfo()
-			autoSaveAutoPasteConfig()
+			CubixHelpers.rebuildQueueLabel()
+			CubixHelpers.setAPFileInfo()
+			CubixHelpers.autoSaveAutoPasteConfig()
 			if autoBuyQueuedEnabled and autoBuyQueuedHouses then
 				autoBuyQueuedHouses()
 			end
 
 			Rayfield:Notify({
 				Title = "Pastebin Queue",
-				Content = "Added " .. autoPasteQueueCopies .. "x " .. baseName .. " [" .. getFileHouseType(houseData) .. "]",
+				Content = "Added " .. autoPasteQueueCopies .. "x " .. baseName .. " [" .. CubixHelpers.getFileHouseType(houseData) .. "]",
 				Duration = 3,
 			})
 		end,
@@ -1670,9 +1672,9 @@ local function loadMain()
 				return Rayfield:Notify({ Title = "File Queue", Content = "Queue is empty", Duration = 2 })
 			end
 			local removed = table.remove(fileQueue, 1)
-			rebuildQueueLabel()
-			setAPFileInfo()
-			autoSaveAutoPasteConfig()
+			CubixHelpers.rebuildQueueLabel()
+			CubixHelpers.setAPFileInfo()
+			CubixHelpers.autoSaveAutoPasteConfig()
 			Rayfield:Notify({ Title = "File Queue", Content = "Removed " .. removed.filename, Duration = 2 })
 		end,
 	})
@@ -1683,9 +1685,9 @@ local function loadMain()
 			autoPasteRunning = false
 			stopFlag = true
 			table.clear(fileQueue)
-			rebuildQueueLabel()
-			setAPFileInfo()
-			autoSaveAutoPasteConfig()
+			CubixHelpers.rebuildQueueLabel()
+			CubixHelpers.setAPFileInfo()
+			CubixHelpers.autoSaveAutoPasteConfig()
 			if autoPasteStatus then
 				pcall(function() autoPasteStatus:Set("Status: Idle") end)
 			end
@@ -1702,7 +1704,7 @@ local function loadMain()
 		if not autoPasteDropdown then return end
 		autoPasteApplyingSavedTargets = true
 		pcall(function()
-			local selected = getAutoPasteTargetNames()
+			local selected = CubixHelpers.getAutoPasteTargetNames()
 			autoPasteDropdown:Set(selected)
 		end)
 		autoPasteApplyingSavedTargets = false
@@ -1833,7 +1835,7 @@ local function loadMain()
 			end
 			local count = 0
 			for _ in pairs(autoPasteSelections) do count += 1 end
-			autoSaveAutoPasteConfig()
+			CubixHelpers.autoSaveAutoPasteConfig()
 			if autoPasteConfigReady then
 				Rayfield:Notify({
 					Title = "Auto Paste",
@@ -1848,7 +1850,7 @@ local function loadMain()
 		Name = "Refresh House List",
 		Callback = function()
 
-			refreshOwnedHouses()
+			CubixHelpers.refreshOwnedHouses()
 			restorePendingAutoPasteTargets(true)
 
 			local added = 0
@@ -1876,7 +1878,7 @@ local function loadMain()
 		Callback = function(opt)
 			local v = (typeof(opt) == "table") and opt[1] or opt
 			autoPasteMode = v == "Slow" and "slow" or "fast"
-			autoSaveAutoPasteConfig()
+			CubixHelpers.autoSaveAutoPasteConfig()
 		end,
 	})
 
@@ -1904,10 +1906,10 @@ local function loadMain()
 	autoPasteFileInfo = AutoPasteTab:CreateLabel("File Queue: 0 file(s)", "list")
 	autoPasteQueueCostLabel = AutoPasteTab:CreateLabel("Queued Total Cost: $0", "list")
 
-	local function setAPStatus(s) pcall(function() autoPasteStatus:Set("Status: " .. s) end) end
-	local function setAPProg(s)   pcall(function() autoPasteProgress:Set("Progress: " .. s) end) end
+	function CubixHelpers.setAPStatus(s) pcall(function() autoPasteStatus:Set("Status: " .. s) end) end
+	function CubixHelpers.setAPProg(s)   pcall(function() autoPasteProgress:Set("Progress: " .. s) end) end
 
-	local function waitUntilInsideHouse(targetId, timeout)
+	function CubixHelpers.waitUntilInsideHouse(targetId, timeout)
 		timeout = timeout or 30
 		local start = tick()
 		while tick() - start < timeout do
@@ -1920,7 +1922,7 @@ local function loadMain()
 		return false
 	end
 
-	local function teleportToHouse(houseId)
+	function CubixHelpers.teleportToHouse(houseId)
 		local ok, err = pcall(function()
 			local interiors = Fsys("InteriorsM")
 
@@ -1944,7 +1946,7 @@ local function loadMain()
 				return false, "Safety stop"
 			end
 
-			setAPStatus("Loading house")
+			CubixHelpers.setAPStatus("Loading house")
 			Rayfield:Notify({
 				Title = "Auto Paste",
 				Content = "Loading house first: " .. tostring(houseName)
@@ -1979,7 +1981,7 @@ local function loadMain()
 		return false, "Failed to load/spawn house after " .. maxAttempts .. " attempts"
 	end
 
-	local function exitCurrentHouse()
+	function CubixHelpers.exitCurrentHouse()
 		local ok, err = pcall(function()
 			local interior = ClientData.get("house_interior")
 			if interior then
@@ -1990,7 +1992,7 @@ local function loadMain()
 		return ok, err
 	end
 
-	local function deselectAutoPasteTarget(houseId)
+	function CubixHelpers.deselectAutoPasteTarget(houseId)
 		if not houseId then return end
 		autoPasteSelections[houseId] = nil
 		if autoPasteDropdown then
@@ -2004,10 +2006,10 @@ local function loadMain()
 				autoPasteDropdown:Set(selectedNames)
 			end)
 		end
-		autoSaveAutoPasteConfig()
+		CubixHelpers.autoSaveAutoPasteConfig()
 	end
 
-	local function clearCurrentHouseFurniture(timeout, safetyCheck)
+	function CubixHelpers.clearCurrentHouseFurniture(timeout, safetyCheck)
 		timeout = timeout or 15
 		local ok, interior = pcall(function() return cd.get("house_interior") end)
 		if not ok or not interior then
@@ -2042,16 +2044,16 @@ local function loadMain()
 		return false, "Timed out waiting for furniture to clear"
 	end
 
-	local function getCurrentHouseType()
+	function CubixHelpers.getCurrentHouseType()
 		local ok, interior = pcall(function() return cd.get("house_interior") end)
 		if not ok or not interior then
 			return nil
 		end
 
-		return getInteriorExactType(interior)
+		return CubixHelpers.getInteriorExactType(interior)
 	end
 
-	local function preflightHousePaste(houseId, houseData)
+	function CubixHelpers.preflightHousePaste(houseId, houseData)
 		if type(houseData) ~= "table" or type(houseData.furniture) ~= "table" then
 			return false, "Invalid source house data"
 		end
@@ -2099,7 +2101,7 @@ local function loadMain()
 		return true, "Preflight passed: " .. count .. " available furniture; skipped " .. skipped .. "; estimated $" .. cost
 	end
 
-	local function pasteIntoHouse(houseId, houseName, houseData, mode, expectedType)
+	function CubixHelpers.pasteIntoHouse(houseId, houseName, houseData, mode, expectedType)
 		local mutationStarted = false
 		local safetyStopped = false
 
@@ -2131,7 +2133,7 @@ local function loadMain()
 			if reason then
 				safetyStopped = true
 				stopFlag = true
-				setAPStatus("Stopped")
+				CubixHelpers.setAPStatus("Stopped")
 				Rayfield:Notify({
 					Title = "Auto Paste Safety Stop",
 					Content = reason .. "\nHouse ID: " .. tostring(houseId)
@@ -2165,11 +2167,11 @@ local function loadMain()
 		local currentInterior = nil
 		pcall(function() currentInterior = cd.get("house_interior") end)
 		if currentInterior and tostring(currentInterior.house_id) ~= tostring(houseId) then
-			exitCurrentHouse()
+			CubixHelpers.exitCurrentHouse()
 			task.wait(1)
 		end
 
-		setAPStatus("Entering house")
+		CubixHelpers.setAPStatus("Entering house")
 		Rayfield:Notify({ Title = "Auto Paste", Content = "Entering loaded house: " .. houseName, Duration = 3 })
 
 		local inside = alreadyInside == true
@@ -2177,14 +2179,14 @@ local function loadMain()
 		for enterAttempt = 1, (alreadyInside and 0 or 3) do
 			if stopFlag or not autoPasteRunning or not checkTargetName() then break end
 
-			local enterOk, enterErr = teleportToHouse(houseId)
+			local enterOk, enterErr = CubixHelpers.teleportToHouse(houseId)
 			lastEnterErr = enterErr
-			if enterOk and waitUntilInsideHouse(houseId, 12) then
+			if enterOk and CubixHelpers.waitUntilInsideHouse(houseId, 12) then
 				inside = true
 				break
 			end
 
-			exitCurrentHouse()
+			CubixHelpers.exitCurrentHouse()
 			task.wait(1)
 			if enterAttempt < 3 then
 				local reloaded, reloadErr = kaliremAP.loadHouseBeforeEntering(houseId, houseName, checkTargetName)
@@ -2203,40 +2205,40 @@ local function loadMain()
 					.. (lastEnterErr and ("\n" .. tostring(lastEnterErr)) or ""),
 				Duration = 6,
 			})
-			exitCurrentHouse()
+			CubixHelpers.exitCurrentHouse()
 			return false
 		end
 
-		setAPStatus("Preparing paste")
+		CubixHelpers.setAPStatus("Preparing paste")
 
-		local actualType = getCurrentHouseType()
+		local actualType = CubixHelpers.getCurrentHouseType()
 		if actualType then ownedHouseTypeMap[houseId] = actualType end
 
-		if expectedType and (not actualType or not isExactSameHouseType(expectedType, actualType)) then
+		if expectedType and (not actualType or not CubixHelpers.isExactSameHouseType(expectedType, actualType)) then
 			Rayfield:Notify({
 				Title = "Auto Paste",
 				Content = "House types do not match!\nSaved: "
-					.. tostring(getExactHouseDisplayName(expectedType))
+					.. tostring(CubixHelpers.getExactHouseDisplayName(expectedType))
 					.. "\nCurrent: "
-					.. tostring(actualType and getExactHouseDisplayName(actualType) or "Unknown")
+					.. tostring(actualType and CubixHelpers.getExactHouseDisplayName(actualType) or "Unknown")
 					.. "\nSkipped: " .. houseName,
 				Duration = 6,
 			})
-			exitCurrentHouse()
+			CubixHelpers.exitCurrentHouse()
 			task.wait(1)
 			return "type_mismatch"
 		end
 
 		if not checkTargetName() then
-			exitCurrentHouse()
+			CubixHelpers.exitCurrentHouse()
 			return false
 		end
 
-		local safe, safeReason = preflightHousePaste(houseId, houseData)
+		local safe, safeReason = CubixHelpers.preflightHousePaste(houseId, houseData)
 		if not safe then
-			setAPStatus("Preflight blocked")
+			CubixHelpers.setAPStatus("Preflight blocked")
 			Rayfield:Notify({ Title = "Pre-Paste Safety Check", Content = safeReason .. "\nHouse unchanged; queue kept.", Duration = 8 })
-			exitCurrentHouse()
+			CubixHelpers.exitCurrentHouse()
 			return false
 		end
 
@@ -2244,27 +2246,27 @@ local function loadMain()
 		if checkpoint and checkpoint.state ~= "idle" and tostring(checkpoint.house_id) == tostring(houseId) then
 			local okCount, current = pcall(function() return cd.get("house_interior") end)
 			if not okCount or not current then return false end
-			local currentCount = countFurniture(current)
+			local currentCount = CubixHelpers.countFurniture(current)
 			if currentCount > 0 then
 				Rayfield:Notify({ Title = "Resume Requires Review", Content = "Interrupted clear/paste detected in " .. houseName .. ". Not clearing or replaying to avoid duplicates. Inspect the house first.", Duration = 9 })
-				exitCurrentHouse()
+				CubixHelpers.exitCurrentHouse()
 				return false
 			end
 		end
-		persistCheckpoint({state = "clearing", house_id = tostring(houseId), house_name = houseName, started_at = os.time(), source_count = countFurniture(houseData)})
+		CubixHelpers.persistCheckpoint({state = "clearing", house_id = tostring(houseId), house_name = houseName, started_at = os.time(), source_count = CubixHelpers.countFurniture(houseData)})
 		mutationStarted = true
-		local cleared, clearErr = clearCurrentHouseFurniture(15, checkTargetName)
+		local cleared, clearErr = CubixHelpers.clearCurrentHouseFurniture(15, checkTargetName)
 		if not cleared then
 			Rayfield:Notify({ Title = "Auto Paste", Content = "Could not clear " .. houseName .. ": " .. tostring(clearErr), Duration = 5 })
-			exitCurrentHouse()
+			CubixHelpers.exitCurrentHouse()
 			return false
 		end
 		if stopFlag or not autoPasteRunning then
-			exitCurrentHouse()
+			CubixHelpers.exitCurrentHouse()
 			return false
 		end
 
-		persistCheckpoint({state = "pasting", house_id = tostring(houseId), house_name = houseName, started_at = os.time(), source_count = countFurniture(houseData)})
+		CubixHelpers.persistCheckpoint({state = "pasting", house_id = tostring(houseId), house_name = houseName, started_at = os.time(), source_count = CubixHelpers.countFurniture(houseData)})
 		local monitoring = true
 		task.spawn(function()
 			while monitoring do
@@ -2286,18 +2288,18 @@ local function loadMain()
 		if not checkTargetName() then pasteOk = false end
 		if pasteOk ~= true then
 			Rayfield:Notify({ Title = "Auto Paste", Content = "Paste failed for " .. houseName .. "; queue item kept", Duration = 5 })
-			exitCurrentHouse()
+			CubixHelpers.exitCurrentHouse()
 			return false
 		end
 		if stopFlag or not autoPasteRunning then
-			exitCurrentHouse()
+			CubixHelpers.exitCurrentHouse()
 			return false
 		end
-		recordPasteSuccess(houseId, houseName, autoPasteSource == "filequeue" and "File Queue" or "Loaded House")
-		deselectAutoPasteTarget(houseId)
-		autoSaveAutoPasteConfig()
+		CubixHelpers.recordPasteSuccess(houseId, houseName, autoPasteSource == "filequeue" and "File Queue" or "Loaded House")
+		CubixHelpers.deselectAutoPasteTarget(houseId)
+		CubixHelpers.autoSaveAutoPasteConfig()
 
-		exitCurrentHouse()
+		CubixHelpers.exitCurrentHouse()
 		task.wait(2)
 
 		return true
@@ -2313,7 +2315,7 @@ local function loadMain()
 
 		for id in pairs(autoPasteSelections) do
 			local key = tostring(id)
-			if not seen[key] and not (skipCompletedHouses and wasPreviouslyCompleted(key)) then
+			if not seen[key] and not (skipCompletedHouses and CubixHelpers.wasPreviouslyCompleted(key)) then
 				seen[key] = true
 				table.insert(ids, id)
 			end
@@ -2328,7 +2330,7 @@ local function loadMain()
 			for _, house in pairs(manager) do
 				if type(house) == "table" and house.house_id ~= nil and kaliremAP.isName(house.name) then
 					local key = tostring(house.house_id)
-					if not seen[key] and not (skipCompletedHouses and wasPreviouslyCompleted(key)) then
+					if not seen[key] and not (skipCompletedHouses and CubixHelpers.wasPreviouslyCompleted(key)) then
 						seen[key] = true
 						autoPasteSelections[house.house_id] = tostring(house.name or ("Kalirem [" .. key .. "]"))
 						table.insert(ids, house.house_id)
@@ -2382,7 +2384,7 @@ local function loadMain()
 				})
 			end
 
-			refreshOwnedHouses()
+			CubixHelpers.refreshOwnedHouses()
 			local candidateIds = kaliremAP.buildCandidateIds()
 
 			if #candidateIds == 0 then
@@ -2413,14 +2415,14 @@ local function loadMain()
 			stopFlag = false
 
 			task.spawn(function()
-				setAPStatus("Running")
+				CubixHelpers.setAPStatus("Running")
 
 				task.spawn(function()
 					while autoPasteRunning and not stopFlag do
 						task.wait(2)
-						setAPFileInfo()
+						CubixHelpers.setAPFileInfo()
 					end
-					setAPFileInfo()
+					CubixHelpers.setAPFileInfo()
 				end)
 
 				if autoPasteSource == "loaded" then
@@ -2430,10 +2432,10 @@ local function loadMain()
 						local houseName = autoPasteSelections[houseId] or tostring(houseId)
 						local expectedType = nil
 						if not (IgnoreTypeCheck and IgnoreTypeCheck.CurrentValue) then
-							expectedType = getSavedHouseExactType(savedhouse)
+							expectedType = CubixHelpers.getSavedHouseExactType(savedhouse)
 						end
-						setAPProg(i .. "/" .. total .. " - " .. houseName)
-						if pasteIntoHouse(houseId, houseName, savedhouse, autoPasteMode, expectedType) == true then
+						CubixHelpers.setAPProg(i .. "/" .. total .. " - " .. houseName)
+						if CubixHelpers.pasteIntoHouse(houseId, houseName, savedhouse, autoPasteMode, expectedType) == true then
 							Rayfield:Notify({ Title = "Auto Paste", Content = houseName .. " done", Duration = 2 })
 						end
 						task.wait(1)
@@ -2447,8 +2449,8 @@ local function loadMain()
 						while fileIndex <= #fileQueue and autoPasteRunning and not stopFlag do
 							local fileEntry = fileQueue[fileIndex]
 							local currentProgress = math.min(progressIndex + 1, totalFiles)
-							local fileType = getFileHouseType(fileEntry.houseData)
-							local matchedId = findMatchingHouse(fileType, candidateIds, usedHouseIds)
+							local fileType = CubixHelpers.getFileHouseType(fileEntry.houseData)
+							local matchedId = CubixHelpers.findMatchingHouse(fileType, candidateIds, usedHouseIds)
 
 							if not matchedId then
 								Rayfield:Notify({
@@ -2462,14 +2464,14 @@ local function loadMain()
 							end
 
 							local houseName = autoPasteSelections[matchedId] or tostring(matchedId)
-							setAPProg(currentProgress .. "/" .. totalFiles .. " - " .. fileEntry.filename .. " -> " .. houseName)
+							CubixHelpers.setAPProg(currentProgress .. "/" .. totalFiles .. " - " .. fileEntry.filename .. " -> " .. houseName)
 
-							local pasteResult = pasteIntoHouse(matchedId, houseName, fileEntry.houseData, autoPasteMode, fileType)
+							local pasteResult = CubixHelpers.pasteIntoHouse(matchedId, houseName, fileEntry.houseData, autoPasteMode, fileType)
 							if pasteResult == true then
 								progressIndex += 1
 								usedHouseIds[matchedId] = true
 
-								local removedOk = removeCompletedQueueEntry(fileEntry, fileIndex)
+								local removedOk = CubixHelpers.removeCompletedQueueEntry(fileEntry, fileIndex)
 								if not removedOk then
 									warn("[Auto Paste] Paste succeeded but queue removal failed for " .. tostring(fileEntry.filename))
 								end
@@ -2492,11 +2494,11 @@ local function loadMain()
 				local wasStopped = stopFlag
 				autoPasteRunning = false
 				
-				rebuildQueueLabel()
-				setAPFileInfo()
+				CubixHelpers.rebuildQueueLabel()
+				CubixHelpers.setAPFileInfo()
 				pcall(saveAutoPasteConfig)
-				setAPStatus(wasStopped and "Stopped" or "Idle")
-				setAPProg("-")
+				CubixHelpers.setAPStatus(wasStopped and "Stopped" or "Idle")
+				CubixHelpers.setAPProg("-")
 				if not wasStopped then
 					Rayfield:Notify({ Title = "Auto Paste", Content = "Auto paste finished", Duration = 5 })
 				end
@@ -2513,14 +2515,14 @@ local function loadMain()
 		Callback = function()
 				autoPasteRunning = false
 				stopFlag = true
-				autoSaveAutoPasteConfig()
-				setAPStatus("Stopped")
-			setAPProg("-")
+				CubixHelpers.autoSaveAutoPasteConfig()
+				CubixHelpers.setAPStatus("Stopped")
+			CubixHelpers.setAPProg("-")
 			Rayfield:Notify({ Title = "Auto Paste", Content = "Stopped", Duration = 3 })
 		end,
 	})
 
-	refreshFQFileList()
+	CubixHelpers.refreshFQFileList()
 
 	local selectedHouseKinds = {}
 	local selectedHouseId = nil
@@ -2573,7 +2575,7 @@ local function loadMain()
 		end,
 	})
 
-	local function captureOwnedHouseIds()
+	function CubixHelpers.captureOwnedHouseIds()
 		local ids = {}
 		for _, house in pairs(ClientData.get("house_manager") or {}) do
 			ids[house.house_id] = true
@@ -2581,21 +2583,21 @@ local function loadMain()
 		return ids
 	end
 
-	local function getOwnedHouseById(id)
+	function CubixHelpers.getOwnedHouseById(id)
 		for _, house in pairs(ClientData.get("house_manager") or {}) do
 			if house.house_id == id then return house end
 		end
 		return nil
 	end
 
-	local function waitUntilHouseGone(id, timeout, shouldContinue)
+	function CubixHelpers.waitUntilHouseGone(id, timeout, shouldContinue)
 		local started = tick()
 		while true do
 			if shouldContinue and not shouldContinue() then
 				return false, "cancelled"
 			end
 
-			if not getOwnedHouseById(id) then
+			if not CubixHelpers.getOwnedHouseById(id) then
 				return true
 			end
 
@@ -2607,7 +2609,7 @@ local function loadMain()
 		end
 	end
 
-	local function autoRenameNewHouse(before, timeout)
+	function CubixHelpers.autoRenameNewHouse(before, timeout)
 		timeout = timeout or 8
 		local started = tick()
 		local newHouses = {}
@@ -2632,7 +2634,7 @@ local function loadMain()
 
 		for _, house in ipairs(newHouses) do
 			-- Only purchase-confirmed new house IDs bypass old completion records.
-			markFreshPurchase(house.house_id)
+			CubixHelpers.markFreshPurchase(house.house_id)
 			maxNumber += 1
 			local newName = "Kalirem " .. maxNumber
 			local ok = pcall(function()
@@ -2647,8 +2649,8 @@ local function loadMain()
 		return #newHouses
 	end
 
-	local function buyOneHouse(kind)
-		local before = captureOwnedHouseIds()
+	function CubixHelpers.buyOneHouse(kind)
+		local before = CubixHelpers.captureOwnedHouseIds()
 		local invokeOk, invokeResult = pcall(function()
 			return Router.get("HousingAPI/BuyHouseWithAddons")
 				:InvokeServer(kind, {}, Color3.fromRGB(255, 182, 193))
@@ -2658,7 +2660,7 @@ local function loadMain()
 			return false
 		end
 
-		local renamed = autoRenameNewHouse(before, 8)
+		local renamed = CubixHelpers.autoRenameNewHouse(before, 8)
 		if renamed <= 0 then
 			Rayfield:Notify({ Title = "Auto Buy", Content = "Purchase was not confirmed for " .. tostring(kind), Duration = 4 })
 			return false
@@ -2667,17 +2669,17 @@ local function loadMain()
 		return true
 	end
 
-	local function buyHouse()
+	function CubixHelpers.buyHouse()
 		if #selectedHouseKinds == 0 then
 			Rayfield:Notify({ Title = "Auto Buy", Content = "No house selected ❌", Duration = 3 })
 			return false
 		end
 		local allSucceeded = true
 		for _, kind in ipairs(selectedHouseKinds) do
-			if not buyOneHouse(kind) then allSucceeded = false end
+			if not CubixHelpers.buyOneHouse(kind) then allSucceeded = false end
 			task.wait(0.5)
 		end
-		refreshOwnedHouses()
+		CubixHelpers.refreshOwnedHouses()
 		return allSucceeded
 	end
 
@@ -2694,7 +2696,7 @@ local function loadMain()
 				local required = {}
 
 				for _, entry in ipairs(fileQueue) do
-					local houseType = getFileHouseType(entry.houseData)
+					local houseType = CubixHelpers.getFileHouseType(entry.houseData)
 
 					if houseType == "Tiny Home" then
 						houseType = "micro_2023"
@@ -2723,7 +2725,7 @@ local function loadMain()
 							if candidate and (
 								string.lower(tostring(candidate))
 									== string.lower(tostring(houseType))
-								or isExactSameHouseType(houseType, candidate)
+								or CubixHelpers.isExactSameHouseType(houseType, candidate)
 							) then
 								buyKind = data.kind or dbKind
 								break
@@ -2785,7 +2787,7 @@ local function loadMain()
 						end)
 
 						if success then
-							local renamed = autoRenameNewHouse(before, 8)
+							local renamed = CubixHelpers.autoRenameNewHouse(before, 8)
 							if renamed > 0 then
 								boughtTotal += 1
 								Rayfield:Notify({
@@ -2835,7 +2837,7 @@ local function loadMain()
 			if autoBuyQueuedToggle then
 				pcall(function() autoBuyQueuedToggle:Set(false) end)
 			end
-			autoSaveAutoPasteConfig()
+			CubixHelpers.autoSaveAutoPasteConfig()
 
 			if not ok then
 				warn("Queued house auto-buy failed: " .. tostring(err))
@@ -2868,9 +2870,9 @@ local function loadMain()
 			if not ok then
 				return Rayfield:Notify({ Title = "Sell", Content = "Sell request failed: " .. tostring(err), Duration = 4 })
 			end
-			if waitUntilHouseGone(sellingId, 8) then
+			if CubixHelpers.waitUntilHouseGone(sellingId, 8) then
 				selectedHouseId = nil
-				refreshOwnedHouses()
+				CubixHelpers.refreshOwnedHouses()
 				Rayfield:Notify({ Title = "Sell", Content = "House sold ✔", Duration = 3 })
 			else
 				Rayfield:Notify({ Title = "Sell", Content = "Sell was not confirmed by inventory", Duration = 4 })
@@ -2881,7 +2883,7 @@ local function loadMain()
 	BuyerTab:CreateButton({
 		Name = "Buy Selected House (One-Time)",
 		Callback = function()
-			buyHouse()
+			CubixHelpers.buyHouse()
 		end,
 	})
 
@@ -2900,11 +2902,11 @@ local function loadMain()
 					for index = 1, buyAmount do
 						if not autoBuy then break end
 						local kind = selectedHouseKinds[((index - 1) % #selectedHouseKinds) + 1]
-						buyOneHouse(kind)
+						CubixHelpers.buyOneHouse(kind)
 						task.wait(0.5)
 					end
 					autoBuy = false
-					refreshOwnedHouses()
+					CubixHelpers.refreshOwnedHouses()
 					pcall(function() autoBuyToggle:Set(false) end)
 				end)
 			end
@@ -2918,12 +2920,12 @@ local function loadMain()
 	local syncingTradeDropdown = false
 	local tradeStatusLabel = TradeTab:CreateLabel("Trading Status: Idle", "activity")
 
-	local function setTradingStatus(message)
+	function CubixHelpers.setTradingStatus(message)
 		pcall(function() tradeStatusLabel:Set("Trading Status: " .. tostring(message)) end)
 		print("[Cubix Trading] " .. tostring(message))
 	end
 
-	local function selectedTradeLabels()
+	function CubixHelpers.selectedTradeLabels()
 		local labels = {}
 		for id in pairs(tradeSelections) do
 			local label = ownedHouseLabelById[id]
@@ -2936,30 +2938,41 @@ local function loadMain()
 		return labels
 	end
 
+	-- Trading UI synchronization is optional: some executors cannot update
+	-- Rayfield's protected Instances from this thread. Never retry endlessly.
+	local tradeDropdownUpdateAvailable = true
+	local tradeDropdownWarningShown = false
 	syncTradeDropdown = function(refreshOptions)
-		if not tradeDropdown or syncingTradeDropdown then return end
+		if not tradeDropdown or syncingTradeDropdown or not tradeDropdownUpdateAvailable then return end
 		syncingTradeDropdown = true
+		local labels = CubixHelpers.selectedTradeLabels()
 		local ok, err = pcall(function()
 			if refreshOptions then tradeDropdown:Refresh(ownedHouseList, true) end
-			tradeDropdown:Set(selectedTradeLabels())
+			tradeDropdown:Set(labels)
 		end)
 		syncingTradeDropdown = false
-		if not ok then warn("[Cubix Trading] Dropdown sync failed:", err) end
+		if not ok then
+			tradeDropdownUpdateAvailable = false
+			if not tradeDropdownWarningShown then
+				tradeDropdownWarningShown = true
+				warn("[Cubix Trading] Dropdown visual sync unavailable in this executor; internal trade selection remains functional. " .. tostring(err))
+			end
+		end
 	end
 
-	local function removeTradeSelection(id)
+	function CubixHelpers.removeTradeSelection(id)
 		tradeSelections[id] = nil
-		lastTradeCount = #selectedTradeLabels()
+		lastTradeCount = #CubixHelpers.selectedTradeLabels()
 		syncTradeDropdown(false)
 	end
 
-	local function stopTrading(message, clearSelections)
+	function CubixHelpers.stopTrading(message, clearSelections)
 		tradingRunning = false
 		tradingGeneration += 1 -- invalidates the current worker
 		if clearSelections then table.clear(tradeSelections) end
-		lastTradeCount = #selectedTradeLabels()
+		lastTradeCount = #CubixHelpers.selectedTradeLabels()
 		syncTradeDropdown(false)
-		setTradingStatus(message or "Stopped")
+		CubixHelpers.setTradingStatus(message or "Stopped")
 	end
 
 	do
@@ -3093,26 +3106,26 @@ local function loadMain()
 			local nextSelection = {}
 			for _, name in ipairs(type(opts) == "table" and opts or {}) do
 				local id = ownedHouseMap[name]
-				if id and getOwnedHouseById(id) then nextSelection[id] = name end
+				if id and CubixHelpers.getOwnedHouseById(id) then nextSelection[id] = name end
 			end
 			table.clear(tradeSelections)
 			for id, name in pairs(nextSelection) do tradeSelections[id] = name end
-			local selectedCount = #selectedTradeLabels()
+			local selectedCount = #CubixHelpers.selectedTradeLabels()
 			if selectedCount ~= lastTradeCount then
 				lastTradeCount = selectedCount
-				setTradingStatus(selectedCount .. " selected")
+				CubixHelpers.setTradingStatus(selectedCount .. " selected")
 			end
 		end,
 	})
 
-	local function processTrade()
+	function CubixHelpers.processTrade()
 		if tradingRunning then
-			setTradingStatus("Queue is already running")
+			CubixHelpers.setTradingStatus("Queue is already running")
 			return
 		end
-		refreshOwnedHouses()
-		if #selectedTradeLabels() == 0 then
-			setTradingStatus("No houses selected")
+		CubixHelpers.refreshOwnedHouses()
+		if #CubixHelpers.selectedTradeLabels() == 0 then
+			CubixHelpers.setTradingStatus("No houses selected")
 			return
 		end
 
@@ -3122,12 +3135,12 @@ local function loadMain()
 		local function active()
 			return tradingRunning and generation == tradingGeneration
 		end
-		setTradingStatus("Started | " .. #selectedTradeLabels() .. " queued")
+		CubixHelpers.setTradingStatus("Started | " .. #CubixHelpers.selectedTradeLabels() .. " queued")
 		task.spawn(function()
 			local completed, failed = 0, 0
 			local ok, err = pcall(function()
 				while active() do
-					refreshOwnedHouses()
+					CubixHelpers.refreshOwnedHouses()
 					if not active() then break end
 					local ids = {}
 					for id in pairs(tradeSelections) do table.insert(ids, id) end
@@ -3138,12 +3151,12 @@ local function loadMain()
 
 					local id = ids[1]
 					local name = tradeSelections[id]
-					if not getOwnedHouseById(id) then
-						removeTradeSelection(id)
-						setTradingStatus(tostring(name) .. " no longer owned; deselected")
+					if not CubixHelpers.getOwnedHouseById(id) then
+						CubixHelpers.removeTradeSelection(id)
+						CubixHelpers.setTradingStatus(tostring(name) .. " no longer owned; deselected")
 						continue
 					end
-					setTradingStatus("Spawning " .. tostring(name) .. " | " .. #ids .. " remaining")
+					CubixHelpers.setTradingStatus("Spawning " .. tostring(name) .. " | " .. #ids .. " remaining")
 					local spawnOK, spawnErr = pcall(function()
 						if active() then Router.get("HousingAPI/SpawnHouse"):FireServer(id) end
 					end)
@@ -3151,7 +3164,7 @@ local function loadMain()
 					if not spawnOK then
 						failed += 1
 						warn("[Cubix Trading] Spawn failed:", spawnErr)
-						setTradingStatus(tostring(name) .. " spawn failed; queue stopped")
+						CubixHelpers.setTradingStatus(tostring(name) .. " spawn failed; queue stopped")
 						break
 					end
 
@@ -3161,25 +3174,25 @@ local function loadMain()
 					end
 					if not active() then break end
 					if not tradeSelections[id] then continue end
-					if not getOwnedHouseById(id) then
-						removeTradeSelection(id)
-						setTradingStatus(tostring(name) .. " no longer owned; deselected")
+					if not CubixHelpers.getOwnedHouseById(id) then
+						CubixHelpers.removeTradeSelection(id)
+						CubixHelpers.setTradingStatus(tostring(name) .. " no longer owned; deselected")
 						continue
 					end
 
-					setTradingStatus("Listing " .. tostring(name))
+					CubixHelpers.setTradingStatus("Listing " .. tostring(name))
 					local listOK, listResult = pcall(function()
 						if active() then return Router.get("HousingAPI/ListHouse"):InvokeServer(id) end
 					end)
 					if not active() then break end
 					if not listOK or listResult == false then
 						failed += 1
-						setTradingStatus(tostring(name) .. " listing failed; queue stopped")
+						CubixHelpers.setTradingStatus(tostring(name) .. " listing failed; queue stopped")
 						break
 					end
 
-					setTradingStatus("Waiting for " .. tostring(name) .. " to trade")
-					local gone, reason = waitUntilHouseGone(id, 300, function()
+					CubixHelpers.setTradingStatus("Waiting for " .. tostring(name) .. " to trade")
+					local gone, reason = CubixHelpers.waitUntilHouseGone(id, 300, function()
 						return active() and tradeSelections[id] ~= nil
 					end)
 					if not active() then break end
@@ -3187,20 +3200,20 @@ local function loadMain()
 						-- Confirm disappearance persists before counting a successful trade.
 						task.wait(1.5)
 						if not active() then break end
-						if not getOwnedHouseById(id) then
+						if not CubixHelpers.getOwnedHouseById(id) then
 							completed += 1
-							removeTradeSelection(id)
-							refreshOwnedHouses()
-							setTradingStatus(tostring(name) .. " traded; automatically deselected")
+							CubixHelpers.removeTradeSelection(id)
+							CubixHelpers.refreshOwnedHouses()
+							CubixHelpers.setTradingStatus(tostring(name) .. " traded; automatically deselected")
 						else
-							setTradingStatus(tostring(name) .. " still owned; queue stopped")
+							CubixHelpers.setTradingStatus(tostring(name) .. " still owned; queue stopped")
 							break
 						end
 					elseif reason == "timeout" then
-						setTradingStatus(tostring(name) .. " timed out; not confirmed traded, still selected")
+						CubixHelpers.setTradingStatus(tostring(name) .. " timed out; not confirmed traded, still selected")
 						break
 					else
-						setTradingStatus(tostring(name) .. " deselected; waiting cancelled")
+						CubixHelpers.setTradingStatus(tostring(name) .. " deselected; waiting cancelled")
 					end
 					if active() then task.wait(0.5) end
 				end
@@ -3208,19 +3221,19 @@ local function loadMain()
 			if not ok then warn("[Cubix Trading] Queue error:", err) end
 			if generation == tradingGeneration then
 				tradingRunning = false
-				local remaining = #selectedTradeLabels()
+				local remaining = #CubixHelpers.selectedTradeLabels()
 				if not ok then
-					setTradingStatus("Queue error; " .. remaining .. " houses still selected")
+					CubixHelpers.setTradingStatus("Queue error; " .. remaining .. " houses still selected")
 				elseif remaining == 0 then
-					setTradingStatus("Finished | " .. completed .. " traded | 0 remaining")
+					CubixHelpers.setTradingStatus("Finished | " .. completed .. " traded | 0 remaining")
 				else
-					setTradingStatus("Stopped | " .. completed .. " traded | " .. remaining .. " still selected")
+					CubixHelpers.setTradingStatus("Stopped | " .. completed .. " traded | " .. remaining .. " still selected")
 				end
 			end
 		end)
 	end
 
-	local function isKaliremHouseName(name)
+	function CubixHelpers.isKaliremHouseName(name)
 		local lowered = string.lower(tostring(name or ""))
 
 		return lowered:match("^%s*kalirem") ~= nil
@@ -3231,7 +3244,7 @@ local function loadMain()
 	local autoTradeWaitingNoticeShown = false
 	local autoTradeToggle
 
-	local function getKaliremTradeHouses()
+	function CubixHelpers.getKaliremTradeHouses()
 
 		local manager = {}
 		pcall(function()
@@ -3241,7 +3254,7 @@ local function loadMain()
 		local matches = {}
 		for _, house in pairs(manager) do
 			local houseName = tostring(house.name or "")
-			if house.house_id and isKaliremHouseName(houseName) then
+			if house.house_id and CubixHelpers.isKaliremHouseName(houseName) then
 				table.insert(matches, {
 					id = house.house_id,
 					name = houseName,
@@ -3273,7 +3286,7 @@ local function loadMain()
 
 	local function refreshKaliremTradeSelections()
 
-		return #getKaliremTradeHouses()
+		return #CubixHelpers.getKaliremTradeHouses()
 	end
 
 	queueKaliremHouses = function()
@@ -3305,7 +3318,7 @@ local function loadMain()
 					continue
 				end
 
-				local matches = getKaliremTradeHouses()
+				local matches = CubixHelpers.getKaliremTradeHouses()
 
 				if #matches == 0 then
 
@@ -3343,8 +3356,8 @@ local function loadMain()
 				local entryId = entry.id
 				local entryName = entry.name
 
-				local currentHouse = getOwnedHouseById(entryId)
-				if not currentHouse or not isKaliremHouseName(currentHouse.name) then
+				local currentHouse = CubixHelpers.getOwnedHouseById(entryId)
+				if not currentHouse or not CubixHelpers.isKaliremHouseName(currentHouse.name) then
 					task.wait(0.25)
 					continue
 				end
@@ -3357,8 +3370,8 @@ local function loadMain()
 
 				local spawned = false
 				while autoTradeStillEnabled() and not spawned do
-					currentHouse = getOwnedHouseById(entryId)
-					if not currentHouse or not isKaliremHouseName(currentHouse.name) then
+					currentHouse = CubixHelpers.getOwnedHouseById(entryId)
+					if not currentHouse or not CubixHelpers.isKaliremHouseName(currentHouse.name) then
 						break
 					end
 
@@ -3373,8 +3386,8 @@ local function loadMain()
 
 				if not autoTradeStillEnabled() then break end
 
-				currentHouse = getOwnedHouseById(entryId)
-				if not currentHouse or not isKaliremHouseName(currentHouse.name) then
+				currentHouse = CubixHelpers.getOwnedHouseById(entryId)
+				if not currentHouse or not CubixHelpers.isKaliremHouseName(currentHouse.name) then
 					task.wait(0.25)
 					continue
 				end
@@ -3382,8 +3395,8 @@ local function loadMain()
 				task.wait(4)
 
 				if not autoTradeStillEnabled() then break end
-				currentHouse = getOwnedHouseById(entryId)
-				if not currentHouse or not isKaliremHouseName(currentHouse.name) then
+				currentHouse = CubixHelpers.getOwnedHouseById(entryId)
+				if not currentHouse or not CubixHelpers.isKaliremHouseName(currentHouse.name) then
 					continue
 				end
 
@@ -3395,7 +3408,7 @@ local function loadMain()
 
 				local lastListAttempt = 0
 				while autoTradeStillEnabled() do
-					currentHouse = getOwnedHouseById(entryId)
+					currentHouse = CubixHelpers.getOwnedHouseById(entryId)
 					if not currentHouse then
 						tradedAnyThisRun = true
 						Rayfield:Notify({
@@ -3404,11 +3417,11 @@ local function loadMain()
 							Duration = 3,
 						})
 
-						pcall(refreshOwnedHouses)
+						pcall(CubixHelpers.refreshOwnedHouses)
 						break
 					end
 
-					if not isKaliremHouseName(currentHouse.name) then
+					if not CubixHelpers.isKaliremHouseName(currentHouse.name) then
 						break
 					end
 
@@ -3487,19 +3500,19 @@ local function loadMain()
 		end,
 	})
 
-	TradeTab:CreateButton({ Name = "Start Trading Queue", Callback = processTrade })
+	TradeTab:CreateButton({ Name = "Start Trading Queue", Callback = CubixHelpers.processTrade })
 
 	TradeTab:CreateButton({
 		Name = "Stop Trading Queue",
 		Callback = function()
-			stopTrading("Stopped manually; remaining selections preserved", false)
+			CubixHelpers.stopTrading("Stopped manually; remaining selections preserved", false)
 		end,
 	})
 
 	TradeTab:CreateButton({
 		Name = "Clear Queue",
 		Callback = function()
-			stopTrading("Queue cleared and stopped", true)
+			CubixHelpers.stopTrading("Queue cleared and stopped", true)
 			Rayfield:Notify({ Title = "Trading", Content = "Queue cleared and stopped", Duration = 3 })
 		end,
 	})
@@ -3776,7 +3789,7 @@ local function loadMain()
 	local function placeFurnitures(furnList, isFix, safetyCheck)
 		local totalfurnitures = #furnList
 		if totalfurnitures == 0 then return true end
-		updateprog("0/" .. totalfurnitures)
+		CubixHelpers.updateprog("0/" .. totalfurnitures)
 
 		local batches, currentBatch = {}, {}
 		for _, item in ipairs(furnList) do
@@ -3790,12 +3803,12 @@ local function loadMain()
 
 		local placed = 0
 		local allSuccessful = true
-		updatestatus(isFix and "Fixing Missing Items" or "Pasting Furniture (Slow)")
+		CubixHelpers.updatestatus(isFix and "Fixing Missing Items" or "Pasting Furniture (Slow)")
 
 		for batchIndex, batch in ipairs(batches) do
 			if stopFlag or (safetyCheck and not safetyCheck()) then return false end
 			for _, item in ipairs(batch) do
-				updateitem((isFix and "Fixing: " or "Placing: ") .. (item.kind or "Unknown"))
+				CubixHelpers.updateitem((isFix and "Fixing: " or "Placing: ") .. (item.kind or "Unknown"))
 				local normalized = {}
 				for colorIndex, color in pairs((item.properties and item.properties.colors) or {}) do
 					if typeof(color) == "Color3" then
@@ -3837,7 +3850,7 @@ local function loadMain()
 					Rayfield:Notify({ Title = "Warning", Content = "Batch " .. batchIndex .. " was not fully confirmed. It will not be resent to avoid duplicates.", Duration = 6, Image = "circle-alert" })
 				end
 			end
-			updateprog(placed .. "/" .. totalfurnitures)
+			CubixHelpers.updateprog(placed .. "/" .. totalfurnitures)
 			task.wait(delay_seconds)
 		end
 		return allSuccessful
@@ -3858,7 +3871,7 @@ local function loadMain()
 				})
 				return
 			end
-			updatestatus("Scanning")
+			CubixHelpers.updatestatus("Scanning")
 			savedhouse = deepCopy(house)
 			if savedhouse.furniture then
 				for _, v in pairs(savedhouse.furniture) do
@@ -3883,9 +3896,9 @@ local function loadMain()
 			local amb = savedhouse.ambiance and "Yes" or "No"
 			local typ = "-"
 			pcall(function() typ = savedhouse.building_type or "-" end)
-			task.spawn(setscaninfo, countfurnitures(savedhouse.furniture), furniturecost, t_count, texturecost, amb, typ)
+			task.spawn(CubixHelpers.setscaninfo, countfurnitures(savedhouse.furniture), furniturecost, t_count, texturecost, amb, typ)
 			Rayfield:Notify({ Title = "Success", Content = "Scanned house", Duration = 3, Image = "circle-check" })
-			updatestatus("Idle")
+			CubixHelpers.updatestatus("Idle")
 		end,
 	})
 
@@ -3893,14 +3906,14 @@ local function loadMain()
 		Name = "Sell All Furnitures",
 		Callback = function()
 			stopFlag = false
-			updatestatus("Clearing House")
-			local cleared, err = clearCurrentHouseFurniture(15)
+			CubixHelpers.updatestatus("Clearing House")
+			local cleared, err = CubixHelpers.clearCurrentHouseFurniture(15)
 			if cleared then
 				Rayfield:Notify({ Title = "Success", Content = "House cleared successfully!", Duration = 3, Image = "circle-check" })
 			else
 				Rayfield:Notify({ Title = "Error", Content = "House clear failed: " .. tostring(err), Duration = 4, Image = "circle-alert" })
 			end
-			updatestatus("Idle")
+			CubixHelpers.updatestatus("Idle")
 		end,
 	})
 
@@ -3913,7 +3926,7 @@ local function loadMain()
 			return false
 		end
 		Rayfield:Notify({ Title = "Loading", Content = "Pasting furnitures...", Duration = 3, Image = "loader" })
-		updatestatus("Pasting Furniture")
+		CubixHelpers.updatestatus("Pasting Furniture")
 
 		local validFurniture = {}
 		local totalfurnitures = 0
@@ -3935,8 +3948,8 @@ local function loadMain()
 			end
 		end
 
-		updateprog("0/" .. totalfurnitures)
-		updateitem("-")
+		CubixHelpers.updateprog("0/" .. totalfurnitures)
+		CubixHelpers.updateitem("-")
 
 		local processedCount = 0
 		local furniturest = {}
@@ -3946,13 +3959,13 @@ local function loadMain()
 			if stopFlag or (safetyCheck and not safetyCheck()) then break end
 			local canbuy, exists = canbuyfurniture(v.id)
 			if not canbuy and exists == true then
-				updatestatus("Idle") updateprog("-") updateitem("-")
+				CubixHelpers.updatestatus("Idle") CubixHelpers.updateprog("-") CubixHelpers.updateitem("-")
 				Rayfield:Notify({ Title = "Error", Content = "Insufficient funds for furniture: " .. v.id, Duration = 3, Image = "circle-alert" })
 				return false
 			elseif not canbuy and exists == false then
 				table.insert(unavailableFurniture, v.id)
 				processedCount += 1
-				updateprog(processedCount .. "/" .. totalfurnitures)
+				CubixHelpers.updateprog(processedCount .. "/" .. totalfurnitures)
 				continue
 			end
 			local normalizedColors = {}
@@ -3978,14 +3991,14 @@ local function loadMain()
 				},
 			})
 			processedCount += 1
-			updateprog(processedCount .. "/" .. totalfurnitures)
-			updateitem(v.id)
+			CubixHelpers.updateprog(processedCount .. "/" .. totalfurnitures)
+			CubixHelpers.updateitem(v.id)
 		end
 
 		notifyUnavailableFurniture(unavailableFurniture)
 
 		if stopFlag or (safetyCheck and not safetyCheck()) then
-			updatestatus("Stopped") updateprog("-") updateitem("-")
+			CubixHelpers.updatestatus("Stopped") CubixHelpers.updateprog("-") CubixHelpers.updateitem("-")
 			return false
 		end
 
@@ -3993,7 +4006,7 @@ local function loadMain()
 			local affordable, requiredCost, availableMoney = canAffordFurnitureRequests(furniturest)
 			if not affordable then
 				Rayfield:Notify({ Title = "Error", Content = "Not enough money for this paste. Need $" .. requiredCost .. ", have $" .. availableMoney, Duration = 5, Image = "circle-alert" })
-				updatestatus("Idle") updateprog("-") updateitem("-")
+				CubixHelpers.updatestatus("Idle") CubixHelpers.updateprog("-") CubixHelpers.updateitem("-")
 				return false
 			end
 			local beforeOk, beforeCount = pcall(function() return countfurnitures(cd.get("house_interior").furniture) end)
@@ -4035,17 +4048,17 @@ local function loadMain()
 
 		local texturesSuccessful = true
 		if houseToPaste.textures and Pastetextures.CurrentValue then
-			updatestatus("Pasting Textures")
-			updateprog("-")
+			CubixHelpers.updatestatus("Pasting Textures")
+			CubixHelpers.updateprog("-")
 			for roomId, textureData in pairs(houseToPaste.textures) do
 				if stopFlag or (safetyCheck and not safetyCheck()) then break end
 				if textureData.floors and not textureexists(roomId, "floors", textureData.floors) then
-					updateitem(roomId .. " floors: " .. textureData.floors)
+					CubixHelpers.updateitem(roomId .. " floors: " .. textureData.floors)
 					if not buytexturewithretry(roomId, "floors", textureData.floors, nil, safetyCheck) then texturesSuccessful = false end
 				end
 				if stopFlag or (safetyCheck and not safetyCheck()) then break end
 				if textureData.walls and not textureexists(roomId, "walls", textureData.walls) then
-					updateitem(roomId .. " walls: " .. textureData.walls)
+					CubixHelpers.updateitem(roomId .. " walls: " .. textureData.walls)
 					if not buytexturewithretry(roomId, "walls", textureData.walls, nil, safetyCheck) then texturesSuccessful = false end
 				end
 				task.wait()
@@ -4071,13 +4084,13 @@ local function loadMain()
 		if not texturesSuccessful then
 
 			Rayfield:Notify({ Title = "Warning", Content = "Paste completed. Unavailable/failed textures were skipped.", Duration = 5, Image = "circle-alert" })
-			updatestatus("Idle") updateprog("-") updateitem("-")
+			CubixHelpers.updatestatus("Idle") CubixHelpers.updateprog("-") CubixHelpers.updateitem("-")
 			return true
 		end
 		Rayfield:Notify({ Title = "Success", Content = "House Placed successfully!", Duration = 3, Image = "circle-check" })
-		updatestatus("Idle")
-		updateprog("-")
-		updateitem("-")
+		CubixHelpers.updatestatus("Idle")
+		CubixHelpers.updateprog("-")
+		CubixHelpers.updateitem("-")
 		return true
 	end
 
@@ -4088,7 +4101,7 @@ local function loadMain()
 			return false
 		end
 		Rayfield:Notify({ Title = "Loading", Content = "Pasting furnitures slowly...", Duration = 3, Image = "loader" })
-		updatestatus("Pasting Furniture (Slow)")
+		CubixHelpers.updatestatus("Pasting Furniture (Slow)")
 
 		local validFurniture = {}
 		local totalfurnitures = 0
@@ -4110,8 +4123,8 @@ local function loadMain()
 			end
 		end
 
-		updateprog("0/" .. totalfurnitures)
-		updateitem("-")
+		CubixHelpers.updateprog("0/" .. totalfurnitures)
+		CubixHelpers.updateitem("-")
 
 		local processedCount = 0
 		local furniturest = {}
@@ -4121,13 +4134,13 @@ local function loadMain()
 			if stopFlag or (safetyCheck and not safetyCheck()) then break end
 			local canbuy, exists = canbuyfurniture(v.id)
 			if not canbuy and exists == true then
-				updatestatus("Idle") updateprog("-") updateitem("-")
+				CubixHelpers.updatestatus("Idle") CubixHelpers.updateprog("-") CubixHelpers.updateitem("-")
 				Rayfield:Notify({ Title = "Error", Content = "Insufficient funds for furniture: " .. v.id, Duration = 3, Image = "circle-alert" })
 				return false
 			elseif not canbuy and exists == false then
 				table.insert(unavailableFurniture, v.id)
 				processedCount += 1
-				updateprog(processedCount .. "/" .. totalfurnitures)
+				CubixHelpers.updateprog(processedCount .. "/" .. totalfurnitures)
 				continue
 			end
 			local normalizedColors = {}
@@ -4153,14 +4166,14 @@ local function loadMain()
 				},
 			})
 			processedCount += 1
-			updateprog(processedCount .. "/" .. totalfurnitures)
-			updateitem(v.id)
+			CubixHelpers.updateprog(processedCount .. "/" .. totalfurnitures)
+			CubixHelpers.updateitem(v.id)
 		end
 
 		notifyUnavailableFurniture(unavailableFurniture)
 
 		if stopFlag or (safetyCheck and not safetyCheck()) then
-			updatestatus("Stopped") updateprog("-") updateitem("-")
+			CubixHelpers.updatestatus("Stopped") CubixHelpers.updateprog("-") CubixHelpers.updateitem("-")
 			return false
 		end
 
@@ -4176,7 +4189,7 @@ local function loadMain()
 		end
 
 		if stopFlag or (safetyCheck and not safetyCheck()) then
-			updatestatus("Stopped") updateprog("-") updateitem("-")
+			CubixHelpers.updatestatus("Stopped") CubixHelpers.updateprog("-") CubixHelpers.updateitem("-")
 			return false
 		end
 
@@ -4194,17 +4207,17 @@ local function loadMain()
 
 		local texturesSuccessful = true
 		if houseToPaste.textures and Pastetextures.CurrentValue then
-			updatestatus("Pasting Textures")
-			updateprog("-")
+			CubixHelpers.updatestatus("Pasting Textures")
+			CubixHelpers.updateprog("-")
 			for roomId, textureData in pairs(houseToPaste.textures) do
 				if stopFlag or (safetyCheck and not safetyCheck()) then break end
 				if textureData.floors and not textureexists(roomId, "floors", textureData.floors) then
-					updateitem(roomId .. " floors: " .. textureData.floors)
+					CubixHelpers.updateitem(roomId .. " floors: " .. textureData.floors)
 					if not buytexturewithretry(roomId, "floors", textureData.floors, nil, safetyCheck) then texturesSuccessful = false end
 				end
 				if stopFlag or (safetyCheck and not safetyCheck()) then break end
 				if textureData.walls and not textureexists(roomId, "walls", textureData.walls) then
-					updateitem(roomId .. " walls: " .. textureData.walls)
+					CubixHelpers.updateitem(roomId .. " walls: " .. textureData.walls)
 					if not buytexturewithretry(roomId, "walls", textureData.walls, nil, safetyCheck) then texturesSuccessful = false end
 				end
 				task.wait()
@@ -4230,13 +4243,13 @@ local function loadMain()
 		if not texturesSuccessful then
 
 			Rayfield:Notify({ Title = "Warning", Content = "Paste completed. Unavailable/failed textures were skipped.", Duration = 5, Image = "circle-alert" })
-			updatestatus("Idle") updateprog("-") updateitem("-")
+			CubixHelpers.updatestatus("Idle") CubixHelpers.updateprog("-") CubixHelpers.updateitem("-")
 			return true
 		end
 		Rayfield:Notify({ Title = "Success", Content = "House Placed successfully! (Slow mode)", Duration = 3, Image = "circle-check" })
-		updatestatus("Idle")
-		updateprog("-")
-		updateitem("-")
+		CubixHelpers.updatestatus("Idle")
+		CubixHelpers.updateprog("-")
+		CubixHelpers.updateitem("-")
 		return true
 	end
 
@@ -4277,7 +4290,7 @@ local function loadMain()
 		if not house_success or not houseInterior or houseInterior.player ~= plr then
 			return Rayfield:Notify({ Title = "Error", Content = "Please enter your house", Duration = 3, Image = "circle-alert" })
 		end
-		updatestatus("Checking Missing Items")
+		CubixHelpers.updatestatus("Checking Missing Items")
 		local currentFurn = houseInterior.furniture or {}
 		local missing = {}
 		local skipped = 0
@@ -4319,23 +4332,23 @@ local function loadMain()
 		end
 		if #missing == 0 then
 			Rayfield:Notify({ Title = "Info", Content = "No missing items found (or all skipped). Skipped: " .. skipped, Duration = 5, Image = "info" })
-			updatestatus("Idle") updateprog("-") updateitem("-")
+			CubixHelpers.updatestatus("Idle") CubixHelpers.updateprog("-") CubixHelpers.updateitem("-")
 			return
 		end
 		local affordable, requiredCost, availableMoney = canAffordFurnitureRequests(missing)
 		if not affordable then
-			updatestatus("Idle") updateprog("-") updateitem("-")
+			CubixHelpers.updatestatus("Idle") CubixHelpers.updateprog("-") CubixHelpers.updateitem("-")
 			return Rayfield:Notify({ Title = "Error", Content = "Not enough money to fix missing items. Need $" .. requiredCost .. ", have $" .. availableMoney, Duration = 5, Image = "circle-alert" })
 		end
 		Rayfield:Notify({ Title = "Fixing", Content = "Attempting to place " .. #missing .. " missing items...", Duration = 5, Image = "loader" })
 		if not placeFurnitures(missing, true) then
-			updatestatus("Idle") updateprog("-") updateitem("-")
+			CubixHelpers.updatestatus("Idle") CubixHelpers.updateprog("-") CubixHelpers.updateitem("-")
 			return Rayfield:Notify({ Title = "Warning", Content = "Some missing items were not confirmed; no batch was resent to avoid duplicates.", Duration = 6, Image = "circle-alert" })
 		end
 		task.wait(1)
 		applyRequestedOutfits(missing)
 		if stopFlag then
-			updatestatus("Stopped") updateprog("-") updateitem("-")
+			CubixHelpers.updatestatus("Stopped") CubixHelpers.updateprog("-") CubixHelpers.updateitem("-")
 			return false
 		end
 		local success, interior = pcall(function() return cd.get("house_interior") end)
@@ -4350,7 +4363,7 @@ local function loadMain()
 			end
 		end
 		Rayfield:Notify({ Title = "Success", Content = "Fix attempt completed!", Duration = 3, Image = "circle-check" })
-		updatestatus("Idle") updateprog("-") updateitem("-")
+		CubixHelpers.updatestatus("Idle") CubixHelpers.updateprog("-") CubixHelpers.updateitem("-")
 	end
 
 	local manualPasteRunning = false
@@ -4367,12 +4380,12 @@ local function loadMain()
 			return Rayfield:Notify({ Title = "Error", Content = "Please enter your house to paste the house", Duration = 3, Image = "circle-alert" })
 		end
 
-		local resolvedSaved = getSavedHouseExactType(savedhouse)
-		local resolvedCurrent = getInteriorExactType(houseInterior)
-		if not IgnoreTypeCheck.CurrentValue and not isExactSameHouseType(resolvedSaved, resolvedCurrent) then
+		local resolvedSaved = CubixHelpers.getSavedHouseExactType(savedhouse)
+		local resolvedCurrent = CubixHelpers.getInteriorExactType(houseInterior)
+		if not IgnoreTypeCheck.CurrentValue and not CubixHelpers.isExactSameHouseType(resolvedSaved, resolvedCurrent) then
 			return Rayfield:Notify({
 				Title = "Error",
-				Content = "House types do not match!\nSaved: " .. tostring(getExactHouseDisplayName(resolvedSaved)) .. "\nCurrent: " .. tostring(getExactHouseDisplayName(resolvedCurrent)) .. "\n\nEnable 'Ignore House Type' to force paste.",
+				Content = "House types do not match!\nSaved: " .. tostring(CubixHelpers.getExactHouseDisplayName(resolvedSaved)) .. "\nCurrent: " .. tostring(CubixHelpers.getExactHouseDisplayName(resolvedCurrent)) .. "\n\nEnable 'Ignore House Type' to force paste.",
 				Duration = 6, Image = "circle-alert",
 			})
 		end
@@ -4382,8 +4395,8 @@ local function loadMain()
 		task.spawn(function()
 			local ok, result = pcall(function()
 				Rayfield:Notify({ Title = "Loading", Content = "Clearing house", Duration = 3, Image = "loader" })
-				updatestatus("Clearing House")
-				local cleared, clearErr = clearCurrentHouseFurniture(15)
+				CubixHelpers.updatestatus("Clearing House")
+				local cleared, clearErr = CubixHelpers.clearCurrentHouseFurniture(15)
 				if not cleared then
 					if stopFlag then return false end
 					error(clearErr or "Could not clear house")
@@ -4393,7 +4406,7 @@ local function loadMain()
 			end)
 			manualPasteRunning = false
 			if not ok then
-				updatestatus("Idle") updateprog("-") updateitem("-")
+				CubixHelpers.updatestatus("Idle") CubixHelpers.updateprog("-") CubixHelpers.updateitem("-")
 				Rayfield:Notify({ Title = "Paste Error", Content = tostring(result), Duration = 5, Image = "circle-alert" })
 			end
 		end)
@@ -4408,7 +4421,7 @@ local function loadMain()
 		Callback = function()
 			stopFlag = true
 			autoPasteRunning = false
-			updatestatus("Stopped") updateprog("-") updateitem("-")
+			CubixHelpers.updatestatus("Stopped") CubixHelpers.updateprog("-") CubixHelpers.updateitem("-")
 			Rayfield:Notify({ Title = "Stopped", Content = "All processes stopped", Duration = 3, Image = "circle-check" })
 		end,
 	})
@@ -4498,7 +4511,7 @@ local function loadMain()
 			else
 				selectedPlayer = value
 			end
-			autoSaveAutoPasteConfig()
+			CubixHelpers.autoSaveAutoPasteConfig()
 		end,
 	})
 
@@ -4519,12 +4532,12 @@ local function loadMain()
 		Callback = function(text)
 			if text ~= "" then
 				selectedPlayer = text
-				autoSaveAutoPasteConfig()
+				CubixHelpers.autoSaveAutoPasteConfig()
 				Rayfield:Notify({ Title = "Player Set", Content = "Now accepting: " .. text, Duration = 3 })
 			else
 				selectedPlayer = nil
 				PlayerDropdown:Set("None")
-				autoSaveAutoPasteConfig()
+				CubixHelpers.autoSaveAutoPasteConfig()
 			end
 		end,
 	})
@@ -4654,7 +4667,7 @@ local function loadMain()
 				activeAcceptedTradePlayer = nil
 				activeAcceptedTradeAt += 1
 			end
-			autoSaveAutoPasteConfig()
+			CubixHelpers.autoSaveAutoPasteConfig()
 			Rayfield:Notify({
 				Title = "Auto Trade",
 				Content = val and ("Enabled for: " .. (selectedPlayer or "Any Player")) or "Disabled",
@@ -4718,7 +4731,7 @@ local function loadMain()
 	})
 
 	local function LoadHouseFromPastebin(pasteValue)
-		local houseData, pasteIdOrErr = loadHouseDataFromPastebin(pasteValue)
+		local houseData, pasteIdOrErr = CubixHelpers.loadHouseDataFromPastebin(pasteValue)
 		if not houseData then
 			return Rayfield:Notify({ Title = "Error", Content = tostring(pasteIdOrErr), Duration = 4 })
 		end
@@ -4733,7 +4746,7 @@ local function loadMain()
 		local t_count = counttextures(savedhouse.textures)
 		local amb = savedhouse.ambiance and "Yes" or "No"
 		local typ = savedhouse.building_type or "-"
-		task.spawn(setscaninfo, countfurnitures(savedhouse.furniture), furniturecost, t_count, texturecost, amb, typ)
+		task.spawn(CubixHelpers.setscaninfo, countfurnitures(savedhouse.furniture), furniturecost, t_count, texturecost, amb, typ)
 		Rayfield:Notify({ Title = "Success", Content = "House loaded from Pastebin", Duration = 3, Image = "circle-check" })
 	end
 
@@ -4773,7 +4786,7 @@ local function loadMain()
 			clean_house.properties = nil clean_house.house_id = nil clean_house.listed_for_trade = nil
 			clean_house.unique = nil clean_house.active_addons = nil clean_house.allows_coop_building = nil
 			clean_house.house_pos = nil clean_house.textures_hash = nil clean_house.player = nil
-			local serializableHouse = serializeAutoPasteValue(clean_house)
+			local serializableHouse = CubixHelpers.serializeAutoPasteValue(clean_house)
 			local ok, encoded = pcall(function() return HttpService:JSONEncode(serializableHouse) end)
 			if not ok then return Rayfield:Notify({ Title = "Error", Content = "Failed to encode house data", Duration = 3 }) end
 			local apiUserKey, loginErr = getUserKey(userPastebinDevKey, userPastebinUsername, userPastebinPassword)
@@ -4867,7 +4880,7 @@ local function loadMain()
 			end
 		end
 		if not fileDropdown then
-			refreshFQFileList()
+			CubixHelpers.refreshFQFileList()
 			return
 		end
 
@@ -4882,7 +4895,7 @@ local function loadMain()
 
 			pcall(function() fileDropdown:Refresh(filtered, true) end)
 		end
-		refreshFQFileList()
+		CubixHelpers.refreshFQFileList()
 	end
 
 	refreshFileDropdown()
@@ -4926,7 +4939,7 @@ local function loadMain()
 			clean_house.properties = nil clean_house.house_id = nil clean_house.listed_for_trade = nil
 			clean_house.unique = nil clean_house.active_addons = nil clean_house.allows_coop_building = nil
 			clean_house.house_pos = nil clean_house.textures_hash = nil clean_house.player = nil
-			local serializableHouse = serializeAutoPasteValue(clean_house)
+			local serializableHouse = CubixHelpers.serializeAutoPasteValue(clean_house)
 			local success, encoded = pcall(function() return HttpService:JSONEncode(serializableHouse) end)
 			if not success then
 				return Rayfield:Notify({ Title = "Error", Content = "Failed to encode house data", Duration = 3, Image = "circle-alert" })
@@ -4948,7 +4961,7 @@ local function loadMain()
 			if not selected or selected == "" then
 				return Rayfield:Notify({ Title = "Error", Content = "No file selected to load", Duration = 3 })
 			end
-			local houseData, err = loadHouseDataFromFile(selected)
+			local houseData, err = CubixHelpers.loadHouseDataFromFile(selected)
 			if not houseData then
 				return Rayfield:Notify({ Title = "Error", Content = "Failed to load " .. selected .. ": " .. tostring(err), Duration = 3 })
 			end
@@ -4965,7 +4978,7 @@ local function loadMain()
 			local t_count = counttextures(savedhouse.textures)
 			local amb = savedhouse.ambiance and "Yes" or "No"
 			local typ = savedhouse.building_type or "-"
-			task.spawn(setscaninfo, countfurnitures(savedhouse.furniture), furniturecost, t_count, texturecost, amb, typ)
+			task.spawn(CubixHelpers.setscaninfo, countfurnitures(savedhouse.furniture), furniturecost, t_count, texturecost, amb, typ)
 			Rayfield:Notify({ Title = "Success", Content = "House loaded from file: " .. selected, Duration = 3 })
 			refreshFileDropdown()
 		end,
@@ -5075,7 +5088,7 @@ local function loadMain()
 			requireValue(type(items) == "table", "This file does not match " .. cloner .. ". Check the Source Cloner selection.")
 			requireValue(type(houseType) == "string" and houseType:match("%S"), "Missing house type.")
 			if cloner == "TBI" then requireValue(array(items, #items), "TBI furniture must be a list.") end
-			local result = {furniture = {}, textures = {}, building_type = resolveExactHouseType(houseType), ambiance = data.ambiance}
+			local result = {furniture = {}, textures = {}, building_type = CubixHelpers.resolveExactHouseType(houseType), ambiance = data.ambiance}
 			local count, cost = 0, 0
 			for key, item in pairs(items) do
 				requireValue(type(item) == "table" and type(item.id) == "string" and item.id ~= "", "Invalid furniture ID at " .. tostring(key))
@@ -5126,7 +5139,7 @@ local function loadMain()
 			result.total_cost = cost
 			result.saved_by = "Cubix-HouseCloner"
 
-			return serializeAutoPasteValue(deserializeFileValue(result)), count
+			return CubixHelpers.serializeAutoPasteValue(CubixHelpers.deserializeFileValue(result)), count
 		end
 
 		ConverterTab:CreateDropdown({
@@ -5234,11 +5247,11 @@ local function loadMain()
 		end,
 	})
 
-	refreshOwnedHouses()
+	CubixHelpers.refreshOwnedHouses()
 
 	pcall(function()
 		ClientData.register_callback_plus_existing("house_manager", function()
-			refreshOwnedHouses()
+			CubixHelpers.refreshOwnedHouses()
 		end)
 	end)
 
@@ -5271,25 +5284,25 @@ local function loadMain()
 			local signature = getHouseManagerSignature()
 			if signature ~= nil and signature ~= lastSignature then
 				lastSignature = signature
-				refreshOwnedHouses()
+				CubixHelpers.refreshOwnedHouses()
 			end
 			task.wait(2)
 		end
 	end)
 
-	pasteHistory = safeReadJSON(pasteHistoryPath) or {}
-	freshPurchases = safeReadJSON(freshPurchasesPath) or {}
-	pasteCheckpoint = safeReadJSON(pasteCheckpointPath)
+	pasteHistory = CubixHelpers.safeReadJSON(pasteHistoryPath) or {}
+	freshPurchases = CubixHelpers.safeReadJSON(freshPurchasesPath) or {}
+	pasteCheckpoint = CubixHelpers.safeReadJSON(pasteCheckpointPath)
 	if pasteCheckpoint and pasteCheckpoint.state == "idle" then pasteCheckpoint = nil end
-	refreshOwnedHouses()
-	local loadCallOk, loadedOk, loadInfo = pcall(loadAutoPasteConfig)
+	CubixHelpers.refreshOwnedHouses()
+	local loadCallOk, loadedOk, loadInfo = pcall(CubixHelpers.loadAutoPasteConfig)
 	if not loadCallOk then
 		warn("[Cubix AutoSave] Failed to load Auto Paste config: " .. tostring(loadedOk))
 	elseif loadedOk == false and loadInfo ~= "No saved Auto Paste config found" then
 		warn("[Cubix AutoSave] " .. tostring(loadInfo))
 	end
 	autoPasteConfigReady = true
-	autoSaveAutoPasteConfig()
+	CubixHelpers.autoSaveAutoPasteConfig()
 
 	task.spawn(function()
 		
