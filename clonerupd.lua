@@ -3028,8 +3028,8 @@ local function loadMain()
 			end
 			task.wait(2) -- Extra time for Adopt Me's UI initialization
 			if env.__CubixPopupStartupToken ~= myToken then return end
-			pcall(function() popupToggle:Set(true) end)
-			setPopupDisabled(true)
+			--pcall(function() popupToggle:Set(true) end)
+			--setPopupDisabled(true)
 			print("[Cubix Popup] Character and UI loaded; DialogApp.Dialog hiding enabled")
 		end)
 	end
