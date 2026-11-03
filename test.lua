@@ -1,19 +1,36 @@
+-- Cubix Delta diagnostic startup build
+local function CubixBoot()
+    warn("[Cubix] Boot started")
+warn("[Cubix] Waiting for game load")
 if not game:IsLoaded() then
 	game.Loaded:Wait()
 end
+warn("[Cubix] Game loaded")
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local HttpService = game:GetService("HttpService")
 local VirtualUser = game:GetService("VirtualUser")
 
+warn("[Cubix] Loading RouterClient module")
 local router = require(ReplicatedStorage.ClientModules.Core.RouterClient.RouterClient)
+warn("[Cubix] RouterClient loaded")
+warn("[Cubix] Loading ClientData module")
 local cd = require(ReplicatedStorage.ClientModules.Core.ClientData)
+warn("[Cubix] ClientData loaded")
+warn("[Cubix] Loading FurnitureDB module")
 local furnituresdb = require(ReplicatedStorage.ClientDB.Housing.FurnitureDB)
+warn("[Cubix] FurnitureDB loaded")
+warn("[Cubix] Loading TexturesDB module")
 local texturesdb = require(ReplicatedStorage.ClientDB.Housing.TexturesDB)
+warn("[Cubix] TexturesDB loaded")
+warn("[Cubix] Loading HouseDB module")
 local housedb = require(ReplicatedStorage.ClientDB.Housing.HouseDB)
+warn("[Cubix] HouseDB loaded")
 
-local Fsys = require(ReplicatedStorage:WaitForChild("Fsys")).load
+warn("[Cubix] Loading Fsys")
+local Fsys = require(ReplicatedStorage:WaitForChild("Fsys", 10) or error("Fsys module not found after 10 seconds")).load
+warn("[Cubix] Fsys loaded")
 local HouseDB = Fsys("HouseDB")
 local ClientData = Fsys("ClientData")
 local Router = Fsys("RouterClient")
@@ -117,6 +134,8 @@ local function ensureTradeLicenseInHotbar()
 end
 
 local function loadMain()
+	warn("[Cubix] Building interface")
+	warn("[Cubix] Downloading Rayfield")
 	local fetchOk, rayfieldSource = pcall(function()
 		return game:HttpGet("https://sirius.menu/rayfield")
 	end)
@@ -132,14 +151,18 @@ local function loadMain()
 		error("Failed to initialize Rayfield: " .. tostring(Rayfield))
 	end
 
+	warn("[Cubix] Rayfield initialized; creating window")
 	local Window = Rayfield:CreateWindow({
 		Name = "Cubix . House Cloner ",
 		LoadingTitle = "Cubix",
 		LoadingSubtitle = "House Cloner",
 		ShowText = "Cubix",
 		Theme = "Amethyst",
+		-- Delta may expose writefile without allowing Rayfield to use it.
+		-- Cubix manages its own Auto Paste / queue persistence below.
+		-- Disable Rayfield's separate config writer to prevent startup save errors.
 		ConfigurationSaving = {
-			Enabled = type(writefile) == "function" and type(readfile) == "function" and type(isfolder) == "function",
+			Enabled = false,
 			FileName = "CubixAutoPasteV3",
 		},
 		Discord = {
@@ -178,11 +201,136 @@ local function loadMain()
 	local BuyerTab = Window:CreateTab("House Buyer", "shopping-bag")
 	local TradeTab = Window:CreateTab("Trading", "repeat")
 
+
+	-- Delta-safe label fallback:
+	-- Rayfield's CreateLabel can fail on some Delta threads with a Plugin capability error.
+	-- Keep trying Rayfield first; if it fails, show the same text in a small Cubix overlay.
+	local cubixFallbackGui
+	local cubixFallbackList
+	local cubixFallbackCount = 0
+
+	local function getCubixFallbackList()
+		if cubixFallbackGui and cubixFallbackGui.Parent then
+			return cubixFallbackList
+		end
+
+		local playerGui = plr:WaitForChild("PlayerGui")
+		local oldGui = playerGui:FindFirstChild("CubixLabelFallback")
+		if oldGui then oldGui:Destroy() end
+
+		local gui = Instance.new("ScreenGui")
+		gui.Name = "CubixLabelFallback"
+		gui.ResetOnSpawn = false
+		gui.IgnoreGuiInset = true
+		gui.DisplayOrder = 25
+		gui.Parent = playerGui
+
+		local panel = Instance.new("Frame")
+		panel.Name = "Panel"
+		panel.AnchorPoint = Vector2.new(1, 0)
+		panel.Position = UDim2.new(1, -12, 0, 90)
+		panel.Size = UDim2.new(0, 310, 0, 190)
+		panel.BackgroundColor3 = Color3.fromRGB(25, 23, 36)
+		panel.BackgroundTransparency = 0.12
+		panel.BorderSizePixel = 0
+		panel.Parent = gui
+
+		local corner = Instance.new("UICorner")
+		corner.CornerRadius = UDim.new(0, 8)
+		corner.Parent = panel
+
+		local stroke = Instance.new("UIStroke")
+		stroke.Color = Color3.fromRGB(135, 100, 190)
+		stroke.Transparency = 0.35
+		stroke.Parent = panel
+
+		local title = Instance.new("TextLabel")
+		title.Name = "Title"
+		title.BackgroundTransparency = 1
+		title.Position = UDim2.fromOffset(10, 5)
+		title.Size = UDim2.new(1, -20, 0, 22)
+		title.Font = Enum.Font.GothamBold
+		title.Text = "Cubix Status"
+		title.TextColor3 = Color3.fromRGB(220, 205, 255)
+		title.TextSize = 13
+		title.TextXAlignment = Enum.TextXAlignment.Left
+		title.Parent = panel
+
+		local list = Instance.new("ScrollingFrame")
+		list.Name = "Labels"
+		list.BackgroundTransparency = 1
+		list.BorderSizePixel = 0
+		list.Position = UDim2.fromOffset(8, 31)
+		list.Size = UDim2.new(1, -16, 1, -38)
+		list.CanvasSize = UDim2.new(0, 0, 0, 0)
+		list.ScrollBarThickness = 4
+		list.Parent = panel
+
+		local layout = Instance.new("UIListLayout")
+		layout.Padding = UDim.new(0, 3)
+		layout.SortOrder = Enum.SortOrder.LayoutOrder
+		layout.Parent = list
+		layout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
+			list.CanvasSize = UDim2.new(0, 0, 0, layout.AbsoluteContentSize.Y + 4)
+		end)
+
+		cubixFallbackGui = gui
+		cubixFallbackList = list
+		return list
+	end
+
+	local function createFallbackLabel(labelText)
+		local list = getCubixFallbackList()
+		cubixFallbackCount += 1
+
+		local label = Instance.new("TextLabel")
+		label.Name = "FallbackLabel" .. cubixFallbackCount
+		label.LayoutOrder = cubixFallbackCount
+		label.BackgroundColor3 = Color3.fromRGB(39, 36, 53)
+		label.BackgroundTransparency = 0.15
+		label.BorderSizePixel = 0
+		label.Size = UDim2.new(1, -4, 0, 24)
+		label.Font = Enum.Font.Gotham
+		label.Text = tostring(labelText or "")
+		label.TextColor3 = Color3.fromRGB(235, 232, 245)
+		label.TextSize = 12
+		label.TextXAlignment = Enum.TextXAlignment.Left
+		label.TextTruncate = Enum.TextTruncate.AtEnd
+		label.Parent = list
+
+		local padding = Instance.new("UIPadding")
+		padding.PaddingLeft = UDim.new(0, 7)
+		padding.PaddingRight = UDim.new(0, 5)
+		padding.Parent = label
+
+		return {
+			Set = function(_, newText)
+				if label and label.Parent then
+					label.Text = tostring(newText or "")
+				end
+			end,
+			Destroy = function()
+				if label then label:Destroy() end
+			end,
+		}
+	end
+
+	local function SafeCreateLabel(tab, labelText, iconName)
+		local ok, result = pcall(function()
+			return tab:CreateLabel(labelText, iconName)
+		end)
+		if ok and result then
+			return result
+		end
+		warn("[Cubix] Rayfield CreateLabel failed; using Delta-safe fallback:", result)
+		return createFallbackLabel(labelText)
+	end
+
 	Manager:CreateSection("Scan Information")
-	local furniture_label = Manager:CreateLabel("House Furniture: 0 ($0)", "armchair")
-	local textures_label = Manager:CreateLabel("House Textures: 0 ($0)", "grid-2x2")
-	local ambiance_label = Manager:CreateLabel("House Ambiance: No", "sun")
-	local type_label = Manager:CreateLabel("House Type: -", "home")
+	local furniture_label = SafeCreateLabel(Manager, "House Furniture: 0 ($0)", "armchair")
+	local textures_label = SafeCreateLabel(Manager, "House Textures: 0 ($0)", "grid-2x2")
+	local ambiance_label = SafeCreateLabel(Manager, "House Ambiance: No", "sun")
+	local type_label = SafeCreateLabel(Manager, "House Type: -", "home")
 
 	local scanInfoGui
 	local scanInfoFrame
@@ -259,9 +407,9 @@ local function loadMain()
 	end
 
 	Manager:CreateSection("Process Status")
-	local status_label = Manager:CreateLabel("Building Status: Idle", "activity")
-	local prog_label = Manager:CreateLabel("Building Prog: -", "trending-up")
-	local item_label = Manager:CreateLabel("Items: -", "box")
+	local status_label = SafeCreateLabel(Manager, "Building Status: Idle", "activity")
+	local prog_label = SafeCreateLabel(Manager, "Building Prog: -", "trending-up")
+	local item_label = SafeCreateLabel(Manager, "Items: -", "box")
 
 	local function setscaninfo(f_count, f_cost, t_count, t_cost, amb, typ)
 		scanInfoValues = { f_count, f_cost, t_count, t_cost, amb, typ }
@@ -314,7 +462,6 @@ local function loadMain()
 	local ownedHouseTypeMap = {}
 	local ownedDropdown
 	local tradeDropdown
-	local syncTradeDropdown
 	local autoPasteDropdown
 	local autoPasteSelections = {}
 	local pendingAutoPasteTargetIds = {}
@@ -433,8 +580,8 @@ local function loadMain()
 		if ownedDropdown then
 			pcall(function() ownedDropdown:Refresh(ownedHouseList, true) end)
 		end
-		if tradeDropdown and syncTradeDropdown then
-			syncTradeDropdown(true)
+		if tradeDropdown then
+			pcall(function() tradeDropdown:Refresh(ownedHouseList, true) end)
 		end
 		if autoPasteDropdown then
 			autoPasteApplyingSavedTargets = true
@@ -456,6 +603,7 @@ local function loadMain()
 		end
 	end
 
+	task.wait(0.05)
 	local AutoPasteTab = Window:CreateTab("Auto Paste", "copy")
 
 	local autoPasteRunning = false
@@ -516,7 +664,18 @@ local function loadMain()
 	local pasteHistory = {}
 	local pasteCheckpoint = nil
 	local function safeWriteJSON(path, value)
-		local ok, err = pcall(function() writefile(path, HttpService:JSONEncode(value)) end)
+		if type(writefile) ~= "function" then
+			return false, "This executor does not provide writefile"
+		end
+		local encodeOk, encoded = pcall(function()
+			return HttpService:JSONEncode(value)
+		end)
+		if not encodeOk then
+			return false, "JSON encode failed: " .. tostring(encoded)
+		end
+		local ok, err = pcall(function()
+			writefile(path, encoded)
+		end)
 		return ok, err
 	end
 	local function safeReadJSON(path)
@@ -1324,7 +1483,13 @@ local function loadMain()
 			return false, autoPasteSaveState.lastError
 		end
 
-		local wrote, err = pcall(function() writefile(autoPasteConfigPath, encoded) end)
+		if type(writefile) ~= "function" then
+			autoPasteSaveState.lastError = "This executor does not provide working file writing (writefile)."
+			return false, autoPasteSaveState.lastError
+		end
+		local wrote, err = pcall(function()
+			writefile(autoPasteConfigPath, encoded)
+		end)
 		if not wrote then
 			autoPasteSaveState.lastError = "Could not save config: " .. tostring(err)
 			return false, autoPasteSaveState.lastError
@@ -1473,7 +1638,7 @@ local function loadMain()
 	end
 
 	refreshOwnedHouses()
-	AutoPasteTab:CreateLabel("Use the current loaded house, or queue files from HouseFS/Houses.", "info")
+	SafeCreateLabel(AutoPasteTab, "Use the current loaded house, or queue files from HouseFS/Houses.", "info")
 
 	AutoPasteTab:CreateSection("Source")
 	autoPasteSourceDropdown = AutoPasteTab:CreateDropdown({
@@ -1502,6 +1667,7 @@ local function loadMain()
 		end,
 	})
 
+	task.wait(0.05)
 	AutoPasteTab:CreateSection("File Queue")
 	AutoPasteTab:CreateInput({
 		Name = "Copies To Queue",
@@ -1596,7 +1762,7 @@ local function loadMain()
 		end,
 	})
 
-	fqQueueListLabel = AutoPasteTab:CreateLabel("Queue: 0 file(s) | Next: (empty)", "list")
+	fqQueueListLabel = SafeCreateLabel(AutoPasteTab, "Queue: 0 file(s) | Next: (empty)", "list")
 	AutoPasteTab:CreateButton({
 		Name = "View Queue (Scrollable)",
 		Callback = function()
@@ -1696,6 +1862,7 @@ local function loadMain()
 		end,
 	})
 
+	task.wait(0.05)
 	AutoPasteTab:CreateSection("Target Houses")
 
 	function kaliremAP.refreshDropdown()
@@ -1865,6 +2032,7 @@ local function loadMain()
 		end,
 	})
 
+	task.wait(0.05)
 	AutoPasteTab:CreateSection("Paste Mode")
 
 	AutoPasteTab:CreateDropdown({
@@ -1899,10 +2067,10 @@ local function loadMain()
 		end,
 	})
 
-	autoPasteStatus = AutoPasteTab:CreateLabel("Status: Idle", "activity")
-	autoPasteProgress = AutoPasteTab:CreateLabel("Progress: -", "trending-up")
-	autoPasteFileInfo = AutoPasteTab:CreateLabel("File Queue: 0 file(s)", "list")
-	autoPasteQueueCostLabel = AutoPasteTab:CreateLabel("Queued Total Cost: $0", "list")
+	autoPasteStatus = SafeCreateLabel(AutoPasteTab, "Status: Idle", "activity")
+	autoPasteProgress = SafeCreateLabel(AutoPasteTab, "Progress: -", "trending-up")
+	autoPasteFileInfo = SafeCreateLabel(AutoPasteTab, "File Queue: 0 file(s)", "list")
+	autoPasteQueueCostLabel = SafeCreateLabel(AutoPasteTab, "Queued Total Cost: $0", "list")
 
 	local function setAPStatus(s) pcall(function() autoPasteStatus:Set("Status: " .. s) end) end
 	local function setAPProg(s)   pcall(function() autoPasteProgress:Set("Progress: " .. s) end) end
@@ -2914,56 +3082,6 @@ local function loadMain()
 	local tradingRunning = false
 	local tradeSelections = {}
 	local lastTradeCount = -1
-	local tradingGeneration = 0
-	local syncingTradeDropdown = false
-	local tradeStatusLabel = TradeTab:CreateLabel("Trading Status: Idle", "activity")
-
-	local function setTradingStatus(message)
-		pcall(function() tradeStatusLabel:Set("Trading Status: " .. tostring(message)) end)
-		print("[Cubix Trading] " .. tostring(message))
-	end
-
-	local function selectedTradeLabels()
-		local labels = {}
-		for id in pairs(tradeSelections) do
-			local label = ownedHouseLabelById[id]
-			if label then
-				tradeSelections[id] = label
-				table.insert(labels, label)
-			else
-				tradeSelections[id] = nil -- No longer in owned-house inventory
-			end
-		end
-		table.sort(labels)
-		return labels
-	end
-
-	syncTradeDropdown = function(refreshOptions)
-		if not tradeDropdown then return end
-		local labels = selectedTradeLabels()
-		local count = #labels
-		lastTradeCount = count
-		syncingTradeDropdown = true
-		local ok, err = pcall(function()
-			if refreshOptions then tradeDropdown:Refresh(ownedHouseList, true) end
-			tradeDropdown:Set(labels)
-		end)
-		syncingTradeDropdown = false
-		if not ok then warn("[Cubix Trading] Dropdown synchronization failed:", err) end
-	end
-
-	local function removeTradeSelection(id)
-		tradeSelections[id] = nil
-		syncTradeDropdown(false)
-	end
-
-	local function stopTrading(message, clearSelections)
-		tradingRunning = false
-		tradingGeneration += 1
-		if clearSelections then table.clear(tradeSelections) end
-		syncTradeDropdown(false)
-		setTradingStatus(message or "Stopped")
-	end
 
 	do
 		-- Reference Auto Trade popup behavior: hide DialogApp.Dialog only.
@@ -3079,8 +3197,8 @@ local function loadMain()
 			end
 			task.wait(2) -- Extra time for Adopt Me's UI initialization
 			if env.__CubixPopupStartupToken ~= myToken then return end
-			pcall(function() popupToggle:Set(true) end)
-			setPopupDisabled(true)
+			--pcall(function() popupToggle:Set(true) end)
+			--setPopupDisabled(true)
 			print("[Cubix Popup] Character and UI loaded; DialogApp.Dialog hiding enabled")
 		end)
 	end
@@ -3092,119 +3210,110 @@ local function loadMain()
 		MultipleOptions = true,
 		Flag = "TradeHouseTargets",
 		Callback = function(opts)
-			if syncingTradeDropdown then return end
-			local nextSelection = {}
-			for _, name in ipairs(type(opts) == "table" and opts or {}) do
-				local id = ownedHouseMap[name]
-				if id and getOwnedHouseById(id) then nextSelection[id] = name end
-			end
 			table.clear(tradeSelections)
-			for id, name in pairs(nextSelection) do tradeSelections[id] = name end
-			local selectedCount = #selectedTradeLabels()
+			for _, name in ipairs(opts or {}) do
+				local id = ownedHouseMap[name]
+				if id then tradeSelections[id] = name end
+			end
+			local selectedCount = 0
+			for _ in pairs(tradeSelections) do selectedCount += 1 end
 			if selectedCount ~= lastTradeCount then
 				lastTradeCount = selectedCount
-				setTradingStatus(selectedCount .. " selected")
+				Rayfield:Notify({ Title = "Trading", Content = selectedCount .. " houses selected" })
 			end
 		end,
 	})
 
 	local function processTrade()
-		if tradingRunning then
-			setTradingStatus("Queue is already running")
-			return
-		end
-		refreshOwnedHouses()
-		if #selectedTradeLabels() == 0 then
-			setTradingStatus("No houses selected")
-			return
-		end
-
-		tradingGeneration += 1
-		local myGeneration = tradingGeneration
+		if tradingRunning then return end
 		tradingRunning = true
-		local function stillRunning()
-			return tradingRunning and myGeneration == tradingGeneration
-		end
-		setTradingStatus("Started | " .. #selectedTradeLabels() .. " queued")
+
+		Rayfield:Notify({
+			Title = "Trading",
+			Content = "Started dynamic queue",
+			Duration = 3
+		})
+
 		task.spawn(function()
-			while stillRunning() do
+			while tradingRunning do
 				refreshOwnedHouses()
-				if not stillRunning() then break end
-				local ids = {}
-				for id in pairs(tradeSelections) do table.insert(ids, id) end
-				table.sort(ids, function(x, y)
-					return tostring(ownedHouseLabelById[x] or x) < tostring(ownedHouseLabelById[y] or y)
-				end)
-				if #ids == 0 then
-					stopTrading("Queue finished - no selected houses left", false)
+
+				local currentQueue = {}
+
+				for id, _ in pairs(tradeSelections) do
+					table.insert(currentQueue, id)
+				end
+
+				if #currentQueue == 0 then
+					Rayfield:Notify({
+						Title = "Trading",
+						Content = "Queue finished ✅",
+						Duration = 3
+					})
 					break
 				end
 
-				local id = ids[1]
+				if not tradingRunning then break end
+				local id = currentQueue[1]
 				local name = tradeSelections[id]
-				if not getOwnedHouseById(id) then
-					setTradingStatus(tostring(name) .. " no longer owned; deselected")
-					removeTradeSelection(id)
+				if not name then
+					task.wait()
 					continue
 				end
-				setTradingStatus("Spawning " .. tostring(name) .. " | " .. #ids .. " remaining")
-				local spawnOK, spawnErr = pcall(function()
-					if not stillRunning() then return end
+
+				Rayfield:Notify({
+					Title = "Trading",
+					Content = "Spawning " .. name,
+					Duration = 3
+				})
+
+				local spawnSuccess = pcall(function()
 					Router.get("HousingAPI/SpawnHouse"):FireServer(id)
 				end)
-				if not stillRunning() then break end
-				if not spawnOK then
-					warn("[Cubix Trading] Spawn failed:", spawnErr)
-					setTradingStatus(tostring(name) .. " spawn failed; deselected")
-					removeTradeSelection(id)
+
+				if not spawnSuccess then
+					Rayfield:Notify({ Title = "Trading", Content = "Failed to spawn " .. name .. " ❌; skipped", Duration = 4 })
+					tradeSelections[id] = nil
+					task.wait(1)
 					continue
 				end
 
-				for _ = 1, 20 do
-					if not stillRunning() or not tradeSelections[id] then break end
-					task.wait(0.25)
-				end
-				if not stillRunning() then break end
-				if not tradeSelections[id] then continue end
-				if not getOwnedHouseById(id) then
-					removeTradeSelection(id)
-					setTradingStatus(tostring(name) .. " no longer owned; deselected")
-					continue
-				end
+				task.wait(5)
 
-				setTradingStatus("Listing " .. tostring(name))
-				local listOK, listResult = pcall(function()
-					if not stillRunning() then return nil end
-					return Router.get("HousingAPI/ListHouse"):InvokeServer(id)
+				Rayfield:Notify({
+					Title = "Trading",
+					Content = "Listing " .. name,
+					Duration = 3
+				})
+
+				local listSuccess = pcall(function()
+					Router.get("HousingAPI/ListHouse"):InvokeServer(id)
 				end)
-				if not stillRunning() then break end
-				if not listOK or listResult == false then
-					setTradingStatus(tostring(name) .. " listing failed; deselected")
-					removeTradeSelection(id)
+
+				if not listSuccess then
+					Rayfield:Notify({ Title = "Trading", Content = "Failed to list " .. name .. " ❌; skipped", Duration = 4 })
+					tradeSelections[id] = nil
+					task.wait(1)
 					continue
 				end
 
-				setTradingStatus("Waiting for " .. tostring(name) .. " to trade")
-				local gone, reason = waitUntilHouseGone(id, 300, function()
-					return stillRunning() and tradeSelections[id] ~= nil
-				end)
-				if not stillRunning() then break end
-				if gone then
-					setTradingStatus(tostring(name) .. " traded / removed from inventory")
-					removeTradeSelection(id)
-					refreshOwnedHouses()
-				elseif reason == "timeout" then
-					setTradingStatus(tostring(name) .. " timed out (NOT confirmed traded); deselected")
-					removeTradeSelection(id)
+				if waitUntilHouseGone(id, 300, function() return tradingRunning end) then
+					Rayfield:Notify({
+						Title = "Trading",
+						Content = name .. " traded ✔",
+						Duration = 3
+					})
+
+					tradeSelections[id] = nil
 				else
-					setTradingStatus(tostring(name) .. " cancelled or deselected")
+					Rayfield:Notify({ Title = "Trading", Content = name .. " timeout ❌; removed from queue", Duration = 4 })
+					tradeSelections[id] = nil
 				end
-				if stillRunning() then task.wait(0.5) end
+
+				task.wait(1)
 			end
-			if myGeneration == tradingGeneration then
-				tradingRunning = false
-				setTradingStatus("Stopped | " .. #selectedTradeLabels() .. " still selected")
-			end
+
+			tradingRunning = false
 		end)
 	end
 
@@ -3478,17 +3587,17 @@ local function loadMain()
 	TradeTab:CreateButton({ Name = "Start Trading Queue", Callback = processTrade })
 
 	TradeTab:CreateButton({
-		Name = "Stop Trading Queue",
-		Callback = function()
-			stopTrading("Stopped manually; remaining selections preserved", false)
-		end,
-	})
-
-	TradeTab:CreateButton({
 		Name = "Clear Queue",
 		Callback = function()
-			stopTrading("Queue cleared and stopped", true)
-			Rayfield:Notify({ Title = "Trading", Content = "Queue cleared and stopped", Duration = 3 })
+			tradingRunning = false
+			table.clear(tradeSelections)
+			lastTradeCount = 0
+			pcall(function()
+				if tradeDropdown then
+					tradeDropdown:Refresh(ownedHouseList, true)
+				end
+			end)
+			Rayfield:Notify({ Title = "Trading", Content = "Queue cleared & stopped 🛑" })
 		end,
 	})
 
@@ -3515,10 +3624,10 @@ local function loadMain()
 		return t
 	end
 
-	Tab:CreateLabel("If you are using glitch houses, use the slow paste. And if you are using normal houses, use the fast paste. If you use it on higher builds expect lagging or crashing.",
+	SafeCreateLabel(Tab, "If you are using glitch houses, use the slow paste. And if you are using normal houses, use the fast paste. If you use it on higher builds expect lagging or crashing.",
 		"info"
 	)
-	Tab:CreateLabel("Do not Touch", "info")
+	SafeCreateLabel(Tab, "Do not Touch", "info")
 
 	Pastetextures = Tab:CreateToggle({
 		Name = "Paste textures",
@@ -3533,6 +3642,7 @@ local function loadMain()
 		Callback = function(_) end,
 	})
 
+	task.wait(0.05)
 	Tab:CreateSection("Slow Paste Settings")
 	local batch_size = 10
 	local delay_seconds = 1
@@ -3555,6 +3665,7 @@ local function loadMain()
 		end,
 	})
 
+	task.wait(0.05)
 	Tab:CreateSection("Main Function")
 
 	local function canbuyfurniture(kind)
@@ -3892,6 +4003,7 @@ local function loadMain()
 		end,
 	})
 
+	task.wait(0.05)
 	Tab:CreateSection("Paste Functions")
 
 	pastehousefast = function(houseData, safetyCheck)
@@ -4401,6 +4513,7 @@ local function loadMain()
 		end,
 	})
 
+	task.wait(0.05)
 	Tab:CreateSection("Trade Functions")
 
 	Tab:CreateButton({
@@ -4664,12 +4777,13 @@ local function loadMain()
 	end)
 	Players.PlayerRemoving:Connect(function() task.wait(0.3) refreshPlayers() end)
 
+	task.wait(0.05)
 	local PastebinTab = Window:CreateTab("Pastebin", "clipboard")
 	local userPastebinDevKey = ""
 	local userPastebinUsername = ""
 	local userPastebinPassword = ""
 
-	PastebinTab:CreateLabel("TO GET DEV API KEY YOU NEED TO MAKE ACCOUNT ON PASTEBIN AFTER THAT GO TO https://pastebin.com/doc_api AND COPY YOUR DEV API KEY",
+	SafeCreateLabel(PastebinTab, "TO GET DEV API KEY YOU NEED TO MAKE ACCOUNT ON PASTEBIN AFTER THAT GO TO https://pastebin.com/doc_api AND COPY YOUR DEV API KEY",
 		"info"
 	)
 	PastebinTab:CreateDivider()
@@ -4777,6 +4891,7 @@ local function loadMain()
 		end,
 	})
 
+	task.wait(0.05)
 	local function initializeFileManagementTabs()
 	local CreateFileTab = Window:CreateTab("Create File", "folder")
 
@@ -5005,7 +5120,7 @@ local function loadMain()
 		local outputName = ""
 		local busy = false
 		local sourceDropdown
-		local status = ConverterTab:CreateLabel("Put source JSON files in HouseFS/Convert, then refresh the list.", "info")
+		local status = SafeCreateLabel(ConverterTab, "Put source JSON files in HouseFS/Convert, then refresh the list.", "info")
 
 		local function ensureFolders()
 			for _, path in ipairs({houseFSPath, convertPath, houseFilesPath}) do
@@ -5168,8 +5283,10 @@ local function loadMain()
 	end
 
 	end 
+	task.wait(0.05)
 	initializeFileManagementTabs()
 
+	task.wait(0.05)
 	local function initializeTeleportAndStartup()
 	local Teleport = Window:CreateTab("Teleport", "map-pin")
 	Teleport:CreateSection("House Teleports")
@@ -5288,16 +5405,32 @@ local function loadMain()
 		ensureTradeLicenseInHotbar()
 	end)
 
+	warn("[Cubix] Interface setup complete")
 	Rayfield:Notify({ Title = "Cubix", Content = "Loaded successfully!", Duration = 5 })
 	end 
 	initializeTeleportAndStartup()
 end
 
-local startupOk, startupErr = xpcall(loadMain, function(err)
-    local trace = (debug and type(debug.traceback) == "function") and debug.traceback(tostring(err), 2) or tostring(err)
-    warn("[Cubix Mobile Startup Error] " .. trace)
-    return trace
+task.spawn(function()
+    local startupOk, startupErr = xpcall(loadMain, function(err)
+        local trace = (debug and type(debug.traceback) == "function")
+            and debug.traceback(tostring(err), 2)
+            or tostring(err)
+        warn("[Cubix Mobile Startup Error] " .. trace)
+        return trace
+    end)
+
+    if not startupOk then
+        warn("[Cubix] Startup failed. See the error printed above: " .. tostring(startupErr))
+    end
 end)
-if not startupOk then
-    warn("[Cubix] Startup failed. See the error printed above: " .. tostring(startupErr))
-end
+end -- CubixBoot
+
+task.spawn(function()
+    local ok, err = xpcall(CubixBoot, function(e)
+        local trace = (debug and type(debug.traceback) == "function") and debug.traceback(tostring(e), 2) or tostring(e)
+        warn("[Cubix] FATAL STARTUP ERROR: " .. trace)
+        return trace
+    end)
+    if not ok then warn("[Cubix] Boot stopped: " .. tostring(err)) end
+end)
