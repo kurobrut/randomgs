@@ -1,36 +1,19 @@
--- Cubix Delta diagnostic startup build
-local function CubixBoot()
-    warn("[Cubix] Boot started")
-warn("[Cubix] Waiting for game load")
 if not game:IsLoaded() then
 	game.Loaded:Wait()
 end
-warn("[Cubix] Game loaded")
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local HttpService = game:GetService("HttpService")
 local VirtualUser = game:GetService("VirtualUser")
 
-warn("[Cubix] Loading RouterClient module")
 local router = require(ReplicatedStorage.ClientModules.Core.RouterClient.RouterClient)
-warn("[Cubix] RouterClient loaded")
-warn("[Cubix] Loading ClientData module")
 local cd = require(ReplicatedStorage.ClientModules.Core.ClientData)
-warn("[Cubix] ClientData loaded")
-warn("[Cubix] Loading FurnitureDB module")
 local furnituresdb = require(ReplicatedStorage.ClientDB.Housing.FurnitureDB)
-warn("[Cubix] FurnitureDB loaded")
-warn("[Cubix] Loading TexturesDB module")
 local texturesdb = require(ReplicatedStorage.ClientDB.Housing.TexturesDB)
-warn("[Cubix] TexturesDB loaded")
-warn("[Cubix] Loading HouseDB module")
 local housedb = require(ReplicatedStorage.ClientDB.Housing.HouseDB)
-warn("[Cubix] HouseDB loaded")
 
-warn("[Cubix] Loading Fsys")
-local Fsys = require(ReplicatedStorage:WaitForChild("Fsys", 10) or error("Fsys module not found after 10 seconds")).load
-warn("[Cubix] Fsys loaded")
+local Fsys = require(ReplicatedStorage:WaitForChild("Fsys")).load
 local HouseDB = Fsys("HouseDB")
 local ClientData = Fsys("ClientData")
 local Router = Fsys("RouterClient")
@@ -134,8 +117,6 @@ local function ensureTradeLicenseInHotbar()
 end
 
 local function loadMain()
-	warn("[Cubix] Building interface")
-	warn("[Cubix] Downloading Rayfield")
 	local fetchOk, rayfieldSource = pcall(function()
 		return game:HttpGet("https://sirius.menu/rayfield")
 	end)
@@ -151,18 +132,14 @@ local function loadMain()
 		error("Failed to initialize Rayfield: " .. tostring(Rayfield))
 	end
 
-	warn("[Cubix] Rayfield initialized; creating window")
 	local Window = Rayfield:CreateWindow({
 		Name = "Cubix . House Cloner ",
 		LoadingTitle = "Cubix",
 		LoadingSubtitle = "House Cloner",
 		ShowText = "Cubix",
 		Theme = "Amethyst",
-		-- Delta may expose writefile without allowing Rayfield to use it.
-		-- Cubix manages its own Auto Paste / queue persistence below.
-		-- Disable Rayfield's separate config writer to prevent startup save errors.
 		ConfigurationSaving = {
-			Enabled = false,
+			Enabled = type(writefile) == "function" and type(readfile) == "function" and type(isfolder) == "function",
 			FileName = "CubixAutoPasteV3",
 		},
 		Discord = {
@@ -603,7 +580,6 @@ local function loadMain()
 		end
 	end
 
-	task.wait(0.05)
 	local AutoPasteTab = Window:CreateTab("Auto Paste", "copy")
 
 	local autoPasteRunning = false
@@ -664,18 +640,7 @@ local function loadMain()
 	local pasteHistory = {}
 	local pasteCheckpoint = nil
 	local function safeWriteJSON(path, value)
-		if type(writefile) ~= "function" then
-			return false, "This executor does not provide writefile"
-		end
-		local encodeOk, encoded = pcall(function()
-			return HttpService:JSONEncode(value)
-		end)
-		if not encodeOk then
-			return false, "JSON encode failed: " .. tostring(encoded)
-		end
-		local ok, err = pcall(function()
-			writefile(path, encoded)
-		end)
+		local ok, err = pcall(function() writefile(path, HttpService:JSONEncode(value)) end)
 		return ok, err
 	end
 	local function safeReadJSON(path)
@@ -1483,13 +1448,7 @@ local function loadMain()
 			return false, autoPasteSaveState.lastError
 		end
 
-		if type(writefile) ~= "function" then
-			autoPasteSaveState.lastError = "This executor does not provide working file writing (writefile)."
-			return false, autoPasteSaveState.lastError
-		end
-		local wrote, err = pcall(function()
-			writefile(autoPasteConfigPath, encoded)
-		end)
+		local wrote, err = pcall(function() writefile(autoPasteConfigPath, encoded) end)
 		if not wrote then
 			autoPasteSaveState.lastError = "Could not save config: " .. tostring(err)
 			return false, autoPasteSaveState.lastError
@@ -1667,7 +1626,6 @@ local function loadMain()
 		end,
 	})
 
-	task.wait(0.05)
 	AutoPasteTab:CreateSection("File Queue")
 	AutoPasteTab:CreateInput({
 		Name = "Copies To Queue",
@@ -1862,7 +1820,6 @@ local function loadMain()
 		end,
 	})
 
-	task.wait(0.05)
 	AutoPasteTab:CreateSection("Target Houses")
 
 	function kaliremAP.refreshDropdown()
@@ -2032,7 +1989,6 @@ local function loadMain()
 		end,
 	})
 
-	task.wait(0.05)
 	AutoPasteTab:CreateSection("Paste Mode")
 
 	AutoPasteTab:CreateDropdown({
@@ -3642,7 +3598,6 @@ local function loadMain()
 		Callback = function(_) end,
 	})
 
-	task.wait(0.05)
 	Tab:CreateSection("Slow Paste Settings")
 	local batch_size = 10
 	local delay_seconds = 1
@@ -3665,7 +3620,6 @@ local function loadMain()
 		end,
 	})
 
-	task.wait(0.05)
 	Tab:CreateSection("Main Function")
 
 	local function canbuyfurniture(kind)
@@ -4003,7 +3957,6 @@ local function loadMain()
 		end,
 	})
 
-	task.wait(0.05)
 	Tab:CreateSection("Paste Functions")
 
 	pastehousefast = function(houseData, safetyCheck)
@@ -4513,7 +4466,6 @@ local function loadMain()
 		end,
 	})
 
-	task.wait(0.05)
 	Tab:CreateSection("Trade Functions")
 
 	Tab:CreateButton({
@@ -4777,7 +4729,6 @@ local function loadMain()
 	end)
 	Players.PlayerRemoving:Connect(function() task.wait(0.3) refreshPlayers() end)
 
-	task.wait(0.05)
 	local PastebinTab = Window:CreateTab("Pastebin", "clipboard")
 	local userPastebinDevKey = ""
 	local userPastebinUsername = ""
@@ -4891,8 +4842,9 @@ local function loadMain()
 		end,
 	})
 
-	task.wait(0.05)
-	local function initializeFileManagementTabs()
+	local fileManagementUtils = {}
+
+	local function initializeCreateFileTab()
 	local CreateFileTab = Window:CreateTab("Create File", "folder")
 
 	if not isfolder(houseFilesPath) then makefolder(houseFilesPath) end
@@ -4919,11 +4871,11 @@ local function loadMain()
 	local fileSearchQuery = ""
 	local allFilesCache = {}
 
-	local function getBaseFileName(path)
+	fileManagementUtils.getBaseFileName = function(path)
 		return tostring(path or ""):match("([^/\\]+)$") or tostring(path or "")
 	end
 
-	local function sanitizeFileName(name)
+	fileManagementUtils.sanitizeFileName = function(name)
 		name = tostring(name or ""):gsub("^%s+", ""):gsub("%s+$", "")
 		name = name:gsub("%.json$", ""):gsub("%.txt$", ""):gsub("%.lua$", "")
 		name = name:gsub("%.%.", "_"):gsub("[/\\:*?\"<>|]", "_")
@@ -4932,7 +4884,7 @@ local function loadMain()
 		return name
 	end
 
-	local function naturalSort(a, b)
+	fileManagementUtils.naturalSort = function(a, b)
 		local function pad(n) return ("%010d"):format(tonumber(n) or 0) end
 		local na = a:lower():gsub("%d+", pad)
 		local nb = b:lower():gsub("%d+", pad)
@@ -4956,7 +4908,7 @@ local function loadMain()
 				table.insert(validFiles, fileName)
 			end
 		end
-		table.sort(validFiles, naturalSort)
+		table.sort(validFiles, fileManagementUtils.naturalSort)
 		allFilesCache = validFiles
 		local filtered = {}
 		for _, name in ipairs(allFilesCache) do
@@ -5001,7 +4953,7 @@ local function loadMain()
 			if not savedhouse then
 				return Rayfield:Notify({ Title = "Error", Content = "No house has been scanned or loaded", Duration = 3, Image = "circle-alert" })
 			end
-			local filename = sanitizeFileName(saveInput.CurrentValue)
+			local filename = fileManagementUtils.sanitizeFileName(saveInput.CurrentValue)
 			if not filename then
 				return Rayfield:Notify({ Title = "Error", Content = "Please enter a valid filename", Duration = 3, Image = "circle-alert" })
 			end
@@ -5078,7 +5030,7 @@ local function loadMain()
 				return Rayfield:Notify({ Title = "Error", Content = "No house selected to delete.", Duration = 3 })
 			end
 			if pendingDelete == selected then
-				selected = getBaseFileName(selected)
+				selected = fileManagementUtils.getBaseFileName(selected)
 				local filePath = houseFilesPath .. "/" .. selected
 				local existsOk, exists = pcall(isfile, filePath)
 				if existsOk and exists then
@@ -5112,6 +5064,9 @@ local function loadMain()
 		end,
 	})
 
+	end
+
+	local function initializeConverterTab()
 	do
 		local ConverterTab = Window:CreateTab("Converter", "repeat")
 		local convertPath = houseFSPath .. "/Convert"
@@ -5133,12 +5088,12 @@ local function loadMain()
 				ensureFolders()
 				local options = {}
 				for _, path in ipairs(listfiles(convertPath)) do
-					local name = getBaseFileName(path)
+					local name = fileManagementUtils.getBaseFileName(path)
 					if name:lower():sub(-5) == ".json" and isfile(convertPath .. "/" .. name) then
 						table.insert(options, name)
 					end
 				end
-				table.sort(options, naturalSort)
+				table.sort(options, fileManagementUtils.naturalSort)
 				if not table.find(options, selectedFile) then selectedFile = options[1] end
 				sourceDropdown:Refresh(options, true)
 				if selectedFile then
@@ -5253,12 +5208,12 @@ local function loadMain()
 			busy = true
 			local ok, filename, count = pcall(function()
 				ensureFolders()
-				local sourceName = getBaseFileName(selectedFile)
+				local sourceName = fileManagementUtils.getBaseFileName(selectedFile)
 				local raw = readfile(convertPath .. "/" .. sourceName)
 				local decoded = HttpService:JSONDecode(raw)
 				local converted, itemCount = convertSource(decoded, sourceCloner)
 				local encoded = HttpService:JSONEncode(converted)
-				local base = sanitizeFileName(outputName:match("%S") and outputName or sourceName)
+				local base = fileManagementUtils.sanitizeFileName(outputName:match("%S") and outputName or sourceName)
 				if not base then error("Enter a valid output filename.", 0) end
 				local name, suffix = base .. ".json", 2
 				while isfile(houseFilesPath .. "/" .. name) do
@@ -5281,12 +5236,14 @@ local function loadMain()
 		end})
 		refreshSources()
 	end
+	end
 
-	end 
-	task.wait(0.05)
+	local function initializeFileManagementTabs()
+		initializeCreateFileTab()
+		initializeConverterTab()
+	end
 	initializeFileManagementTabs()
 
-	task.wait(0.05)
 	local function initializeTeleportAndStartup()
 	local Teleport = Window:CreateTab("Teleport", "map-pin")
 	Teleport:CreateSection("House Teleports")
@@ -5405,32 +5362,16 @@ local function loadMain()
 		ensureTradeLicenseInHotbar()
 	end)
 
-	warn("[Cubix] Interface setup complete")
 	Rayfield:Notify({ Title = "Cubix", Content = "Loaded successfully!", Duration = 5 })
 	end 
 	initializeTeleportAndStartup()
 end
 
-task.spawn(function()
-    local startupOk, startupErr = xpcall(loadMain, function(err)
-        local trace = (debug and type(debug.traceback) == "function")
-            and debug.traceback(tostring(err), 2)
-            or tostring(err)
-        warn("[Cubix Mobile Startup Error] " .. trace)
-        return trace
-    end)
-
-    if not startupOk then
-        warn("[Cubix] Startup failed. See the error printed above: " .. tostring(startupErr))
-    end
+local startupOk, startupErr = xpcall(loadMain, function(err)
+    local trace = (debug and type(debug.traceback) == "function") and debug.traceback(tostring(err), 2) or tostring(err)
+    warn("[Cubix Mobile Startup Error] " .. trace)
+    return trace
 end)
-end -- CubixBoot
-
-task.spawn(function()
-    local ok, err = xpcall(CubixBoot, function(e)
-        local trace = (debug and type(debug.traceback) == "function") and debug.traceback(tostring(e), 2) or tostring(e)
-        warn("[Cubix] FATAL STARTUP ERROR: " .. trace)
-        return trace
-    end)
-    if not ok then warn("[Cubix] Boot stopped: " .. tostring(err)) end
-end)
+if not startupOk then
+    warn("[Cubix] Startup failed. See the error printed above: " .. tostring(startupErr))
+end
