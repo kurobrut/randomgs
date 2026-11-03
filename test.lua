@@ -4842,9 +4842,9 @@ local function loadMain()
 		end,
 	})
 
-	local fileManagementUtils = {}
+	CubixFileManagementUtils = {}
 
-	local function initializeCreateFileTab()
+	function CubixInitializeCreateFileTab()
 	local CreateFileTab = Window:CreateTab("Create File", "folder")
 
 	if not isfolder(houseFilesPath) then makefolder(houseFilesPath) end
@@ -4871,11 +4871,11 @@ local function loadMain()
 	local fileSearchQuery = ""
 	local allFilesCache = {}
 
-	fileManagementUtils.getBaseFileName = function(path)
+	CubixFileManagementUtils.getBaseFileName = function(path)
 		return tostring(path or ""):match("([^/\\]+)$") or tostring(path or "")
 	end
 
-	fileManagementUtils.sanitizeFileName = function(name)
+	CubixFileManagementUtils.sanitizeFileName = function(name)
 		name = tostring(name or ""):gsub("^%s+", ""):gsub("%s+$", "")
 		name = name:gsub("%.json$", ""):gsub("%.txt$", ""):gsub("%.lua$", "")
 		name = name:gsub("%.%.", "_"):gsub("[/\\:*?\"<>|]", "_")
@@ -4884,7 +4884,7 @@ local function loadMain()
 		return name
 	end
 
-	fileManagementUtils.naturalSort = function(a, b)
+	CubixFileManagementUtils.naturalSort = function(a, b)
 		local function pad(n) return ("%010d"):format(tonumber(n) or 0) end
 		local na = a:lower():gsub("%d+", pad)
 		local nb = b:lower():gsub("%d+", pad)
@@ -4908,7 +4908,7 @@ local function loadMain()
 				table.insert(validFiles, fileName)
 			end
 		end
-		table.sort(validFiles, fileManagementUtils.naturalSort)
+		table.sort(validFiles, CubixFileManagementUtils.naturalSort)
 		allFilesCache = validFiles
 		local filtered = {}
 		for _, name in ipairs(allFilesCache) do
@@ -4953,7 +4953,7 @@ local function loadMain()
 			if not savedhouse then
 				return Rayfield:Notify({ Title = "Error", Content = "No house has been scanned or loaded", Duration = 3, Image = "circle-alert" })
 			end
-			local filename = fileManagementUtils.sanitizeFileName(saveInput.CurrentValue)
+			local filename = CubixFileManagementUtils.sanitizeFileName(saveInput.CurrentValue)
 			if not filename then
 				return Rayfield:Notify({ Title = "Error", Content = "Please enter a valid filename", Duration = 3, Image = "circle-alert" })
 			end
@@ -5030,7 +5030,7 @@ local function loadMain()
 				return Rayfield:Notify({ Title = "Error", Content = "No house selected to delete.", Duration = 3 })
 			end
 			if pendingDelete == selected then
-				selected = fileManagementUtils.getBaseFileName(selected)
+				selected = CubixFileManagementUtils.getBaseFileName(selected)
 				local filePath = houseFilesPath .. "/" .. selected
 				local existsOk, exists = pcall(isfile, filePath)
 				if existsOk and exists then
@@ -5066,7 +5066,7 @@ local function loadMain()
 
 	end
 
-	local function initializeConverterTab()
+	function CubixInitializeConverterTab()
 	do
 		local ConverterTab = Window:CreateTab("Converter", "repeat")
 		local convertPath = houseFSPath .. "/Convert"
@@ -5088,12 +5088,12 @@ local function loadMain()
 				ensureFolders()
 				local options = {}
 				for _, path in ipairs(listfiles(convertPath)) do
-					local name = fileManagementUtils.getBaseFileName(path)
+					local name = CubixFileManagementUtils.getBaseFileName(path)
 					if name:lower():sub(-5) == ".json" and isfile(convertPath .. "/" .. name) then
 						table.insert(options, name)
 					end
 				end
-				table.sort(options, fileManagementUtils.naturalSort)
+				table.sort(options, CubixFileManagementUtils.naturalSort)
 				if not table.find(options, selectedFile) then selectedFile = options[1] end
 				sourceDropdown:Refresh(options, true)
 				if selectedFile then
@@ -5208,12 +5208,12 @@ local function loadMain()
 			busy = true
 			local ok, filename, count = pcall(function()
 				ensureFolders()
-				local sourceName = fileManagementUtils.getBaseFileName(selectedFile)
+				local sourceName = CubixFileManagementUtils.getBaseFileName(selectedFile)
 				local raw = readfile(convertPath .. "/" .. sourceName)
 				local decoded = HttpService:JSONDecode(raw)
 				local converted, itemCount = convertSource(decoded, sourceCloner)
 				local encoded = HttpService:JSONEncode(converted)
-				local base = fileManagementUtils.sanitizeFileName(outputName:match("%S") and outputName or sourceName)
+				local base = CubixFileManagementUtils.sanitizeFileName(outputName:match("%S") and outputName or sourceName)
 				if not base then error("Enter a valid output filename.", 0) end
 				local name, suffix = base .. ".json", 2
 				while isfile(houseFilesPath .. "/" .. name) do
@@ -5238,13 +5238,13 @@ local function loadMain()
 	end
 	end
 
-	local function initializeFileManagementTabs()
-		initializeCreateFileTab()
-		initializeConverterTab()
+	function CubixInitializeFileManagementTabs()
+		CubixInitializeCreateFileTab()
+		CubixInitializeConverterTab()
 	end
-	initializeFileManagementTabs()
+	CubixInitializeFileManagementTabs()
 
-	local function initializeTeleportAndStartup()
+	function CubixInitializeTeleportAndStartup()
 	local Teleport = Window:CreateTab("Teleport", "map-pin")
 	Teleport:CreateSection("House Teleports")
 
@@ -5364,7 +5364,7 @@ local function loadMain()
 
 	Rayfield:Notify({ Title = "Cubix", Content = "Loaded successfully!", Duration = 5 })
 	end 
-	initializeTeleportAndStartup()
+	CubixInitializeTeleportAndStartup()
 end
 
 local startupOk, startupErr = xpcall(loadMain, function(err)
