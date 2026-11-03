@@ -178,15 +178,136 @@ local function loadMain()
 	local BuyerTab = Window:CreateTab("House Buyer", "shopping-bag")
 	local TradeTab = Window:CreateTab("Trading", "repeat")
 
+
+	-- Delta-safe label fallback:
+	-- Rayfield's CreateLabel can fail on some Delta threads with a Plugin capability error.
+	-- Keep trying Rayfield first; if it fails, show the same text in a small Cubix overlay.
+	local cubixFallbackGui
+	local cubixFallbackList
+	local cubixFallbackCount = 0
+
+	local function getCubixFallbackList()
+		if cubixFallbackGui and cubixFallbackGui.Parent then
+			return cubixFallbackList
+		end
+
+		local playerGui = plr:WaitForChild("PlayerGui")
+		local oldGui = playerGui:FindFirstChild("CubixLabelFallback")
+		if oldGui then oldGui:Destroy() end
+
+		local gui = Instance.new("ScreenGui")
+		gui.Name = "CubixLabelFallback"
+		gui.ResetOnSpawn = false
+		gui.IgnoreGuiInset = true
+		gui.DisplayOrder = 25
+		gui.Parent = playerGui
+
+		local panel = Instance.new("Frame")
+		panel.Name = "Panel"
+		panel.AnchorPoint = Vector2.new(1, 0)
+		panel.Position = UDim2.new(1, -12, 0, 90)
+		panel.Size = UDim2.new(0, 310, 0, 190)
+		panel.BackgroundColor3 = Color3.fromRGB(25, 23, 36)
+		panel.BackgroundTransparency = 0.12
+		panel.BorderSizePixel = 0
+		panel.Parent = gui
+
+		local corner = Instance.new("UICorner")
+		corner.CornerRadius = UDim.new(0, 8)
+		corner.Parent = panel
+
+		local stroke = Instance.new("UIStroke")
+		stroke.Color = Color3.fromRGB(135, 100, 190)
+		stroke.Transparency = 0.35
+		stroke.Parent = panel
+
+		local title = Instance.new("TextLabel")
+		title.Name = "Title"
+		title.BackgroundTransparency = 1
+		title.Position = UDim2.fromOffset(10, 5)
+		title.Size = UDim2.new(1, -20, 0, 22)
+		title.Font = Enum.Font.GothamBold
+		title.Text = "Cubix Status"
+		title.TextColor3 = Color3.fromRGB(220, 205, 255)
+		title.TextSize = 13
+		title.TextXAlignment = Enum.TextXAlignment.Left
+		title.Parent = panel
+
+		local list = Instance.new("ScrollingFrame")
+		list.Name = "Labels"
+		list.BackgroundTransparency = 1
+		list.BorderSizePixel = 0
+		list.Position = UDim2.fromOffset(8, 31)
+		list.Size = UDim2.new(1, -16, 1, -38)
+		list.CanvasSize = UDim2.new(0, 0, 0, 0)
+		list.ScrollBarThickness = 4
+		list.Parent = panel
+
+		local layout = Instance.new("UIListLayout")
+		layout.Padding = UDim.new(0, 3)
+		layout.SortOrder = Enum.SortOrder.LayoutOrder
+		layout.Parent = list
+		layout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
+			list.CanvasSize = UDim2.new(0, 0, 0, layout.AbsoluteContentSize.Y + 4)
+		end)
+
+		cubixFallbackGui = gui
+		cubixFallbackList = list
+		return list
+	end
+
+	local function createFallbackLabel(labelText)
+		local list = getCubixFallbackList()
+		cubixFallbackCount += 1
+
+		local label = Instance.new("TextLabel")
+		label.Name = "FallbackLabel" .. cubixFallbackCount
+		label.LayoutOrder = cubixFallbackCount
+		label.BackgroundColor3 = Color3.fromRGB(39, 36, 53)
+		label.BackgroundTransparency = 0.15
+		label.BorderSizePixel = 0
+		label.Size = UDim2.new(1, -4, 0, 24)
+		label.Font = Enum.Font.Gotham
+		label.Text = tostring(labelText or "")
+		label.TextColor3 = Color3.fromRGB(235, 232, 245)
+		label.TextSize = 12
+		label.TextXAlignment = Enum.TextXAlignment.Left
+		label.TextTruncate = Enum.TextTruncate.AtEnd
+		label.Parent = list
+
+		local padding = Instance.new("UIPadding")
+		padding.PaddingLeft = UDim.new(0, 7)
+		padding.PaddingRight = UDim.new(0, 5)
+		padding.Parent = label
+
+		return {
+			Set = function(_, newText)
+				if label and label.Parent then
+					label.Text = tostring(newText or "")
+				end
+			end,
+			Destroy = function()
+				if label then label:Destroy() end
+			end,
+		}
+	end
+
+	local function SafeCreateLabel(tab, labelText, iconName)
+		local ok, result = pcall(function()
+			return tab:CreateLabel(labelText, iconName)
+		end)
+		if ok and result then
+			return result
+		end
+		warn("[Cubix] Rayfield CreateLabel failed; using Delta-safe fallback:", result)
+		return createFallbackLabel(labelText)
+	end
+
 	Manager:CreateSection("Scan Information")
-	task.wait(0.3)
-	local furniture_label = Manager:CreateLabel("House Furniture: 0 ($0)", "armchair")
-	task.wait(0.3)
-	local textures_label = Manager:CreateLabel("House Textures: 0 ($0)", "grid-2x2")
-	task.wait(0.3)
-	local ambiance_label = Manager:CreateLabel("House Ambiance: No", "sun")
-	task.wait(0.3)
-	local type_label = Manager:CreateLabel("House Type: -", "home")
+	local furniture_label = SafeCreateLabel(Manager, "House Furniture: 0 ($0)", "armchair")
+	local textures_label = SafeCreateLabel(Manager, "House Textures: 0 ($0)", "grid-2x2")
+	local ambiance_label = SafeCreateLabel(Manager, "House Ambiance: No", "sun")
+	local type_label = SafeCreateLabel(Manager, "House Type: -", "home")
 
 	local scanInfoGui
 	local scanInfoFrame
@@ -263,12 +384,9 @@ local function loadMain()
 	end
 
 	Manager:CreateSection("Process Status")
-	task.wait(0.3)
-	local status_label = Manager:CreateLabel("Building Status: Idle", "activity")
-	task.wait(0.3)
-	local prog_label = Manager:CreateLabel("Building Prog: -", "trending-up")
-	task.wait(0.3)
-	local item_label = Manager:CreateLabel("Items: -", "box")
+	local status_label = SafeCreateLabel(Manager, "Building Status: Idle", "activity")
+	local prog_label = SafeCreateLabel(Manager, "Building Prog: -", "trending-up")
+	local item_label = SafeCreateLabel(Manager, "Items: -", "box")
 
 	local function setscaninfo(f_count, f_cost, t_count, t_cost, amb, typ)
 		scanInfoValues = { f_count, f_cost, t_count, t_cost, amb, typ }
@@ -475,12 +593,11 @@ local function loadMain()
 	local autoTradeEnabled = false
 	local selectedPlayer = nil
 	local autoAcceptToggle
-	local autoAcceptPlayerInput
 	local PlayerDropdown
 	local getPlayers
-
 	local skipCompletedHouses = true
 	local autoPasteMode = "fast"
+	local autoPasteSource = "loaded"
 
 	local kaliremAP = {
 		enabled = false,
@@ -505,6 +622,7 @@ local function loadMain()
 	local autoPasteProgress
 	local autoPastePastebinValue = ""
 	local autoPasteQueueCopies = 1
+	local autoPasteSourceDropdown
 	local autoPasteConfigReady = false
 	local autoPasteSaveState = { pending = false, dirty = false, lastError = nil }
 	local saveAutoPasteConfig
@@ -533,15 +651,6 @@ local function loadMain()
 		if ok and type(result) == "table" then return result end
 		return nil
 	end
-
-	-- Restore Auto Accept before creating its controls so their initial UI state
-	-- matches the last saved Auto Paste config instead of starting at false.
-	local earlyAutoPasteConfig = safeReadJSON(autoPasteConfigPath)
-	if earlyAutoPasteConfig then
-		selectedPlayer = type(earlyAutoPasteConfig.autoAcceptPlayer) == "string"
-			and earlyAutoPasteConfig.autoAcceptPlayer or nil
-		autoTradeEnabled = earlyAutoPasteConfig.autoAcceptEnabled == true
-	end
 	local function persistCheckpoint(value)
 		pasteCheckpoint = value
 		return safeWriteJSON(pasteCheckpointPath, value or { state = "idle" })
@@ -564,7 +673,7 @@ local function loadMain()
 	local function recordPasteSuccess(houseId, houseName, sourceName)
 		pasteHistory[tostring(houseId)] = {
 			house_id = tostring(houseId), name = tostring(houseName),
-			source = tostring(sourceName or "File Queue"), timestamp = os.time()
+			source = tostring(sourceName or "Loaded House"), timestamp = os.time()
 		}
 		saveHistory()
 		-- The new purchase is now legitimately completed.
@@ -909,6 +1018,28 @@ local function loadMain()
 				autoPasteQueueCostLabel:Set("Queued Total Cost: $" .. getQueueTotalCost())
 			end)
 		end
+	end
+
+	local updatingPasteSourceUI = false
+	local function setAutoPasteSource(source, fromDropdown)
+		source = source == "filequeue" and "filequeue" or "loaded"
+		local changed = autoPasteSource ~= source
+		autoPasteSource = source
+		if fromDropdown or updatingPasteSourceUI or not autoPasteSourceDropdown then
+			return changed
+		end
+		local desired = source == "filequeue" and "File Queue" or "Loaded House"
+		local current = autoPasteSourceDropdown.CurrentOption
+		if type(current) == "table" then current = current[1] end
+		if current ~= desired then
+			updatingPasteSourceUI = true
+			local ok, err = pcall(function()
+				autoPasteSourceDropdown:Set(desired)
+			end)
+			updatingPasteSourceUI = false
+			if not ok then warn("[Cubix] Paste Source UI sync failed:", err) end
+		end
+		return changed
 	end
 
 	local function rebuildQueueLabel()
@@ -1298,7 +1429,8 @@ local function loadMain()
 			})
 		end
 		local config = {
-			version = 5,
+			version = 4,
+			source = autoPasteSource,
 			pasteMode = autoPasteMode,
 			autoPasteKaliremEnabled = false,
 			queueCopies = autoPasteQueueCopies,
@@ -1358,6 +1490,7 @@ local function loadMain()
 			end
 		end
 
+		autoPasteSource = config.source == "filequeue" and "filequeue" or "loaded"
 		autoPasteMode = config.pasteMode == "slow" and "slow" or "fast"
 		kaliremAP.enabled = false
 		autoPasteQueueCopies = math.clamp(math.floor(tonumber(config.queueCopies) or 1), 1, 50)
@@ -1378,6 +1511,7 @@ local function loadMain()
 			missingTargets += 1
 		end
 
+		setAutoPasteSource(autoPasteSource)
 		if autoPasteDropdown then
 			autoPasteApplyingSavedTargets = true
 			pcall(function()
@@ -1390,11 +1524,9 @@ local function loadMain()
 		autoPasteApplyingSavedTargets = true
 		if PlayerDropdown then
 			pcall(function()
+				PlayerDropdown:Refresh(getPlayers())
 				PlayerDropdown:Set(selectedPlayer or "None")
 			end)
-		end
-		if autoAcceptPlayerInput then
-			pcall(function() autoAcceptPlayerInput:Set(selectedPlayer or "") end)
 		end
 		if autoAcceptToggle then
 			pcall(function() autoAcceptToggle:Set(autoTradeEnabled) end)
@@ -1465,10 +1597,22 @@ local function loadMain()
 	end
 
 	refreshOwnedHouses()
-	task.wait(0.3)
-	AutoPasteTab:CreateLabel("Queue saved house files or Pastebin data, then paste each item into a matching target house.", "info")
+	SafeCreateLabel(AutoPasteTab, "Use the current loaded house, or queue files from HouseFS/Houses.", "info")
 
-	AutoPasteTab:CreateSection("Queue Options")
+	AutoPasteTab:CreateSection("Source")
+	autoPasteSourceDropdown = AutoPasteTab:CreateDropdown({
+		Name = "Paste Source",
+		Options = { "Loaded House", "File Queue" },
+		CurrentOption = { "Loaded House" },
+		MultipleOptions = false,
+		Flag = "AutoPasteSource",
+		Callback = function(opt)
+			if updatingPasteSourceUI then return end
+			local v = (typeof(opt) == "table") and opt[1] or opt
+			local changed = setAutoPasteSource(v == "File Queue" and "filequeue" or "loaded", true)
+			if changed then autoSaveAutoPasteConfig() end
+		end,
+	})
 
 	autoBuyQueuedToggle = AutoPasteTab:CreateToggle({
 		Name = "Auto Buy Queued Houses",
@@ -1482,7 +1626,7 @@ local function loadMain()
 		end,
 	})
 
-	AutoPasteTab:CreateSection("Queue Items")
+	AutoPasteTab:CreateSection("File Queue")
 	AutoPasteTab:CreateInput({
 		Name = "Copies To Queue",
 		PlaceholderText = "1",
@@ -1541,6 +1685,7 @@ local function loadMain()
 			for _, filename in ipairs(selected) do
 				local houseData, err = loadHouseDataFromFile(filename)
 				if houseData then
+					setAutoPasteSource("filequeue")
 					for copyIndex = 1, autoPasteQueueCopies do
 						local displayName = filename
 						if autoPasteQueueCopies > 1 then
@@ -1575,8 +1720,7 @@ local function loadMain()
 		end,
 	})
 
-	task.wait(0.3)
-	fqQueueListLabel = AutoPasteTab:CreateLabel("Queue: 0 file(s) | Next: (empty)", "list")
+	fqQueueListLabel = SafeCreateLabel(AutoPasteTab, "Queue: 0 file(s) | Next: (empty)", "list")
 	AutoPasteTab:CreateButton({
 		Name = "View Queue (Scrollable)",
 		Callback = function()
@@ -1616,6 +1760,7 @@ local function loadMain()
 
 			local pasteId = tostring(pasteIdOrErr)
 			local baseName = "Pastebin_" .. pasteId
+			setAutoPasteSource("filequeue")
 			for copyIndex = 1, autoPasteQueueCopies do
 				local displayName = baseName
 				if autoPasteQueueCopies > 1 then
@@ -1878,14 +2023,10 @@ local function loadMain()
 		end,
 	})
 
-	task.wait(0.3)
-	autoPasteStatus = AutoPasteTab:CreateLabel("Status: Idle", "activity")
-	task.wait(0.3)
-	autoPasteProgress = AutoPasteTab:CreateLabel("Progress: -", "trending-up")
-	task.wait(0.3)
-	autoPasteFileInfo = AutoPasteTab:CreateLabel("File Queue: 0 file(s)", "list")
-	task.wait(0.3)
-	autoPasteQueueCostLabel = AutoPasteTab:CreateLabel("Queued Total Cost: $0", "list")
+	autoPasteStatus = SafeCreateLabel(AutoPasteTab, "Status: Idle", "activity")
+	autoPasteProgress = SafeCreateLabel(AutoPasteTab, "Progress: -", "trending-up")
+	autoPasteFileInfo = SafeCreateLabel(AutoPasteTab, "File Queue: 0 file(s)", "list")
+	autoPasteQueueCostLabel = SafeCreateLabel(AutoPasteTab, "Queued Total Cost: $0", "list")
 
 	local function setAPStatus(s) pcall(function() autoPasteStatus:Set("Status: " .. s) end) end
 	local function setAPProg(s)   pcall(function() autoPasteProgress:Set("Progress: " .. s) end) end
@@ -2153,7 +2294,7 @@ local function loadMain()
 		end
 
 		setAPStatus("Entering house")
-		Rayfield:Notify({ Title = "Auto Paste", Content = "Entering target house: " .. houseName, Duration = 3 })
+		Rayfield:Notify({ Title = "Auto Paste", Content = "Entering loaded house: " .. houseName, Duration = 3 })
 
 		local inside = alreadyInside == true
 		local lastEnterErr = nil
@@ -2181,7 +2322,7 @@ local function loadMain()
 		if not inside then
 			Rayfield:Notify({
 				Title = "Auto Paste",
-				Content = "Could not verify the selected target house " .. houseName
+				Content = "Could not verify the exact loaded house " .. houseName
 					.. ". Nothing was cleared or pasted."
 					.. (lastEnterErr and ("\n" .. tostring(lastEnterErr)) or ""),
 				Duration = 6,
@@ -2276,7 +2417,7 @@ local function loadMain()
 			exitCurrentHouse()
 			return false
 		end
-		recordPasteSuccess(houseId, houseName, "File Queue")
+		recordPasteSuccess(houseId, houseName, autoPasteSource == "filequeue" and "File Queue" or "Loaded House")
 		deselectAutoPasteTarget(houseId)
 		autoSaveAutoPasteConfig()
 
@@ -2349,7 +2490,15 @@ local function loadMain()
 				})
 			end
 
-			if #fileQueue == 0 then
+			if autoPasteSource == "loaded" and not savedhouse then
+				return Rayfield:Notify({
+					Title = "Auto Paste",
+					Content = "No house loaded.\nPlease scan or load a house first.",
+					Duration = 4,
+				})
+			end
+
+			if autoPasteSource == "filequeue" and #fileQueue == 0 then
 				return Rayfield:Notify({
 					Title = "Auto Paste",
 					Content = "File Queue is empty.\nAdd files first.",
@@ -2398,55 +2547,70 @@ local function loadMain()
 					setAPFileInfo()
 				end)
 
-				if #fileQueue > 0 then
-					local usedHouseIds = {}
-					local totalFiles = #fileQueue
-					local fileIndex = 1
-					local progressIndex = 0
-
-					while fileIndex <= #fileQueue and autoPasteRunning and not stopFlag do
-						local fileEntry = fileQueue[fileIndex]
-						local currentProgress = math.min(progressIndex + 1, totalFiles)
-						local fileType = getFileHouseType(fileEntry.houseData)
-						local matchedId = findMatchingHouse(fileType, candidateIds, usedHouseIds)
-
-						if not matchedId then
-							Rayfield:Notify({
-								Title = "Auto Paste",
-								Content = "No matching house for " .. fileEntry.filename .. " [" .. fileType .. "], skipping",
-								Duration = 5,
-							})
-							progressIndex += 1
-							fileIndex += 1
-							continue
+				if autoPasteSource == "loaded" then
+					local total = #candidateIds
+					for i, houseId in ipairs(candidateIds) do
+						if stopFlag or not autoPasteRunning then break end
+						local houseName = autoPasteSelections[houseId] or tostring(houseId)
+						local expectedType = nil
+						if not (IgnoreTypeCheck and IgnoreTypeCheck.CurrentValue) then
+							expectedType = getSavedHouseExactType(savedhouse)
 						end
-
-						local houseName = autoPasteSelections[matchedId] or tostring(matchedId)
-						setAPProg(currentProgress .. "/" .. totalFiles .. " - " .. fileEntry.filename .. " -> " .. houseName)
-
-						local pasteResult = pasteIntoHouse(matchedId, houseName, fileEntry.houseData, autoPasteMode, fileType)
-						if pasteResult == true then
-							progressIndex += 1
-							usedHouseIds[matchedId] = true
-
-							local removedOk = removeCompletedQueueEntry(fileEntry, fileIndex)
-							if not removedOk then
-								warn("[Auto Paste] Paste succeeded but queue removal failed for " .. tostring(fileEntry.filename))
-							end
-							Rayfield:Notify({
-								Title = "Auto Paste",
-								Content = fileEntry.filename .. " -> " .. houseName .. " done",
-								Duration = 3,
-							})
-						elseif pasteResult == "type_mismatch" then
-							usedHouseIds[matchedId] = true
-						else
-							progressIndex += 1
-							fileIndex += 1
+						setAPProg(i .. "/" .. total .. " - " .. houseName)
+						if pasteIntoHouse(houseId, houseName, savedhouse, autoPasteMode, expectedType) == true then
+							Rayfield:Notify({ Title = "Auto Paste", Content = houseName .. " done", Duration = 2 })
 						end
-
 						task.wait(1)
 					end
+				elseif autoPasteSource == "filequeue" then
+					local usedHouseIds = {}
+						local totalFiles = #fileQueue
+						local fileIndex = 1
+						local progressIndex = 0
+
+						while fileIndex <= #fileQueue and autoPasteRunning and not stopFlag do
+							local fileEntry = fileQueue[fileIndex]
+							local currentProgress = math.min(progressIndex + 1, totalFiles)
+							local fileType = getFileHouseType(fileEntry.houseData)
+							local matchedId = findMatchingHouse(fileType, candidateIds, usedHouseIds)
+
+							if not matchedId then
+								Rayfield:Notify({
+									Title = "Auto Paste",
+									Content = "No matching house for " .. fileEntry.filename .. " [" .. fileType .. "], skipping",
+									Duration = 5,
+								})
+								progressIndex += 1
+								fileIndex += 1
+								continue
+							end
+
+							local houseName = autoPasteSelections[matchedId] or tostring(matchedId)
+							setAPProg(currentProgress .. "/" .. totalFiles .. " - " .. fileEntry.filename .. " -> " .. houseName)
+
+							local pasteResult = pasteIntoHouse(matchedId, houseName, fileEntry.houseData, autoPasteMode, fileType)
+							if pasteResult == true then
+								progressIndex += 1
+								usedHouseIds[matchedId] = true
+
+								local removedOk = removeCompletedQueueEntry(fileEntry, fileIndex)
+								if not removedOk then
+									warn("[Auto Paste] Paste succeeded but queue removal failed for " .. tostring(fileEntry.filename))
+								end
+								Rayfield:Notify({
+									Title = "Auto Paste",
+									Content = fileEntry.filename .. " -> " .. houseName .. " done",
+									Duration = 3,
+								})
+							elseif pasteResult == "type_mismatch" then
+								usedHouseIds[matchedId] = true
+							else
+								progressIndex += 1
+								fileIndex += 1
+							end
+
+							task.wait(1)
+						end
 				end
 
 				local wasStopped = stopFlag
@@ -3416,12 +3580,10 @@ local function loadMain()
 		return t
 	end
 
-	task.wait(0.3)
-	Tab:CreateLabel("If you are using glitch houses, use the slow paste. And if you are using normal houses, use the fast paste. If you use it on higher builds expect lagging or crashing.",
+	SafeCreateLabel(Tab, "If you are using glitch houses, use the slow paste. And if you are using normal houses, use the fast paste. If you use it on higher builds expect lagging or crashing.",
 		"info"
 	)
-	task.wait(0.3)
-	Tab:CreateLabel("Do not Touch", "info")
+	SafeCreateLabel(Tab, "Do not Touch", "info")
 
 	Pastetextures = Tab:CreateToggle({
 		Name = "Paste textures",
@@ -4378,44 +4540,44 @@ local function loadMain()
 	PlayerDropdown = Tab:CreateDropdown({
 		Name = "Select Player",
 		Options = getPlayers(),
-		CurrentOption = selectedPlayer or "None",
+		CurrentOption = "None",
 		MultipleOptions = false,
 		Flag = "AutoAcceptPlayer",
 		Callback = function(option)
 			if autoPasteApplyingSavedTargets then return end
 			local value = (typeof(option) == "table") and option[1] or option
-			if value == "None" or value == "No Players Online" or value == nil then
-				value = nil
+			if value == "None" or value == "No Players Online" then
+				selectedPlayer = nil
 			else
-				value = tostring(value)
-			end
-			selectedPlayer = value
-			if autoAcceptPlayerInput then
-				pcall(function() autoAcceptPlayerInput:Set(selectedPlayer or "") end)
+				selectedPlayer = value
 			end
 			autoSaveAutoPasteConfig()
 		end,
 	})
 
-	autoAcceptPlayerInput = Tab:CreateInput({
+	local function refreshPlayers()
+		local players = getPlayers()
+		autoPasteApplyingSavedTargets = true
+		pcall(function()
+			PlayerDropdown:Refresh(players)
+			PlayerDropdown:Set(selectedPlayer or "None")
+		end)
+		autoPasteApplyingSavedTargets = false
+	end
+
+	Tab:CreateInput({
 		Name = "Type Player Name",
-		CurrentValue = selectedPlayer or "",
 		PlaceholderText = "Enter username...",
 		RemoveTextAfterFocusLost = false,
 		Callback = function(text)
-			if autoPasteApplyingSavedTargets then return end
-			local value = tostring(text or ""):gsub("^%s+", ""):gsub("%s+$", "")
-			if value == "" then value = nil end
-			if value == selectedPlayer then
-				return
-			end
-			selectedPlayer = value
-			if not value and PlayerDropdown then
-				pcall(function() PlayerDropdown:Set("None") end)
-			end
-			autoSaveAutoPasteConfig()
-			if value then
-				Rayfield:Notify({ Title = "Player Set", Content = "Now accepting: " .. value, Duration = 3 })
+			if text ~= "" then
+				selectedPlayer = text
+				autoSaveAutoPasteConfig()
+				Rayfield:Notify({ Title = "Player Set", Content = "Now accepting: " .. text, Duration = 3 })
+			else
+				selectedPlayer = nil
+				PlayerDropdown:Set("None")
+				autoSaveAutoPasteConfig()
 			end
 		end,
 	})
@@ -4537,14 +4699,9 @@ local function loadMain()
 
 	autoAcceptToggle = Tab:CreateToggle({
 		Name = "Auto Accept Player",
-		CurrentValue = autoTradeEnabled,
-		Flag = "AutoAcceptEnabled",
+		CurrentValue = false,
 		Callback = function(val)
-			val = val == true
 			if autoPasteApplyingSavedTargets then return end
-			if val == autoTradeEnabled then
-				return
-			end
 			autoTradeEnabled = val
 			if not val then
 				activeAcceptedTradePlayer = nil
@@ -4561,6 +4718,7 @@ local function loadMain()
 
 	Players.PlayerAdded:Connect(function(player)
 		task.wait(0.3)
+		refreshPlayers()
 		if autoTradeEnabled and not selectedPlayer and player ~= Players.LocalPlayer then
 			Rayfield:Notify({
 				Title = "Auto Trade",
@@ -4569,14 +4727,14 @@ local function loadMain()
 			})
 		end
 	end)
+	Players.PlayerRemoving:Connect(function() task.wait(0.3) refreshPlayers() end)
 
 	local PastebinTab = Window:CreateTab("Pastebin", "clipboard")
 	local userPastebinDevKey = ""
 	local userPastebinUsername = ""
 	local userPastebinPassword = ""
 
-	task.wait(0.3)
-	PastebinTab:CreateLabel("TO GET DEV API KEY YOU NEED TO MAKE ACCOUNT ON PASTEBIN AFTER THAT GO TO https://pastebin.com/doc_api AND COPY YOUR DEV API KEY",
+	SafeCreateLabel(PastebinTab, "TO GET DEV API KEY YOU NEED TO MAKE ACCOUNT ON PASTEBIN AFTER THAT GO TO https://pastebin.com/doc_api AND COPY YOUR DEV API KEY",
 		"info"
 	)
 	PastebinTab:CreateDivider()
@@ -4912,8 +5070,7 @@ local function loadMain()
 		local outputName = ""
 		local busy = false
 		local sourceDropdown
-		task.wait(0.3)
-		local status = ConverterTab:CreateLabel("Put source JSON files in HouseFS/Convert, then refresh the list.", "info")
+		local status = SafeCreateLabel(ConverterTab, "Put source JSON files in HouseFS/Convert, then refresh the list.", "info")
 
 		local function ensureFolders()
 			for _, path in ipairs({houseFSPath, convertPath, houseFilesPath}) do
@@ -5090,47 +5247,30 @@ local function loadMain()
 		if interiortype == "house" then enter("housing", "MainDoor", { house_owner = name }) end
 	end
 
-	local teleportPlayerName = ""
-	Teleport:CreateInput({
-		Name = "Player Name",
-		PlaceholderText = "Enter username or display name...",
-		RemoveTextAfterFocusLost = false,
-		Callback = function(value)
-			teleportPlayerName = tostring(value or ""):gsub("^%s+", ""):gsub("%s+$", "")
-		end,
+	local function getplayernames()
+		local players = Players:GetPlayers()
+		local names = table.create(#players)
+		for i, player in ipairs(players) do names[i] = player.Name end
+		return names
+	end
+
+	local selectedplayer = Teleport:CreateDropdown({
+		Name = "Select Player",
+		Options = getplayernames(),
+		CurrentOption = { getplayernames()[1] },
+		MultipleOptions = false,
+		Flag = "TeleportPlayer",
+		Callback = function(_) end,
 	})
+
+	Players.PlayerAdded:Connect(function() selectedplayer:Refresh(getplayernames()) end)
+	Players.PlayerRemoving:Connect(function() selectedplayer:Refresh(getplayernames()) end)
 
 	Teleport:CreateButton({
 		Name = "Enter House",
 		Callback = function()
-			local query = string.lower(teleportPlayerName)
-			local target = nil
-			if query ~= "" then
-				for _, player in ipairs(Players:GetPlayers()) do
-					if string.lower(player.Name) == query then
-						target = player
-						break
-					end
-				end
-				if not target then
-					for _, player in ipairs(Players:GetPlayers()) do
-						if string.lower(player.DisplayName) == query then
-							target = player
-							break
-						end
-					end
-				end
-			end
-
-			if target then
-				loadinterior("house", target)
-			else
-				Rayfield:Notify({
-					Title = "House Teleports",
-					Content = "Enter the username or display name of someone currently in the server.",
-					Duration = 3,
-				})
-			end
+			local target = Players:FindFirstChild(selectedplayer.CurrentOption[1])
+			if target then loadinterior("house", target) end
 		end,
 	})
 
