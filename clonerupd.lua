@@ -1,3 +1,4 @@
+print("[Cubix] Loaded")
 if not game:IsLoaded() then
 	game.Loaded:Wait()
 end
@@ -17,6 +18,38 @@ local Fsys = require(ReplicatedStorage:WaitForChild("Fsys")).load
 local HouseDB = Fsys("HouseDB")
 local ClientData = Fsys("ClientData")
 local Router = Fsys("RouterClient")
+
+local function restoreIdentity()
+	local setId = setthreadidentity or set_thread_identity or setidentity
+		or (syn and syn.set_thread_identity)
+	if type(setId) == "function" then
+		pcall(setId, 8)
+	end
+end
+
+local function withIdentity(module)
+	if type(module) ~= "table" then return module end
+	return setmetatable({}, {
+		__index = function(_, key)
+			local value = module[key]
+			if type(value) == "function" then
+				return function(...)
+					restoreIdentity()
+					return value(...)
+				end
+			end
+			return value
+		end,
+		__newindex = function(_, key, value) module[key] = value end,
+	})
+end
+
+router = withIdentity(router)
+cd = withIdentity(cd)
+Router = withIdentity(Router)
+ClientData = withIdentity(ClientData)
+restoreIdentity()
+
 
 local plr = Players.LocalPlayer
 while not plr do
@@ -63,7 +96,6 @@ local function tableContainsTradeLicense(value, depth, seen)
 end
 
 local function tradeLicenseAlreadyInHotbar()
-
 	local candidateKeys = {
 		"tool_slots",
 		"tool_slot_properties",
@@ -138,6 +170,8 @@ local function loadMain()
 		LoadingSubtitle = "House Cloner",
 		ShowText = "Cubix",
 		Theme = "Amethyst",
+		DisableRayfieldPrompts = true,
+		DisableBuildWarnings = true,
 		ConfigurationSaving = {
 			Enabled = type(writefile) == "function" and type(readfile) == "function" and type(isfolder) == "function",
 			FileName = "CubixAutoPasteV3",
@@ -148,6 +182,52 @@ local function loadMain()
 			RememberJoins = false,
 		},
 	})
+
+	-- [Cubix fix] Some mobile executors drop the thread identity after game code
+	-- runs, which makes Rayfield fail with "lacking capability Plugin".
+	-- Re-assert identity before every UI creation call, and fall back to a
+	-- label without an icon if the icon lookup is what fails.
+	restoreIdentity()
+
+	local rawCreateTab = Window.CreateTab
+	Window.CreateTab = function(self, ...)
+		restoreIdentity()
+		local tab = rawCreateTab(self, ...)
+		local rawCreateLabel = tab.CreateLabel
+		tab.CreateLabel = function(tabSelf, text, icon, ...)
+			restoreIdentity()
+			local ok, label = pcall(rawCreateLabel, tabSelf, text, icon, ...)
+			if ok then return label end
+			warn("[Cubix] CreateLabel failed (" .. tostring(label) .. "); retrying without icon")
+			restoreIdentity()
+			local ok2, label2 = pcall(rawCreateLabel, tabSelf, text)
+			if ok2 then return label2 end
+			error(label2, 0)
+		end
+		local rawCreateDropdown = tab.CreateDropdown
+		tab.CreateDropdown = function(tabSelf, ...)
+			restoreIdentity()
+			local dropdown = rawCreateDropdown(tabSelf, ...)
+			if type(dropdown) == "table" then
+				for _, method in ipairs({ "Refresh", "Set" }) do
+					local rawMethod = dropdown[method]
+					if type(rawMethod) == "function" then
+						dropdown[method] = function(self, ...)
+							restoreIdentity()
+							local ok, err = pcall(rawMethod, self, ...)
+							if not ok then
+								warn("[Cubix] Dropdown:" .. method .. " failed: " .. tostring(err))
+							end
+							return ok
+						end
+					end
+				end
+			end
+			return dropdown
+		end
+		return tab
+	end
+
 
 	local savedhouse = nil
 	local stopFlag = false
@@ -179,13 +259,9 @@ local function loadMain()
 	local TradeTab = Window:CreateTab("Trading", "repeat")
 
 	Manager:CreateSection("Scan Information")
-	task.wait(0.3)
 	local furniture_label = Manager:CreateLabel("House Furniture: 0 ($0)", "armchair")
-	task.wait(0.3)
 	local textures_label = Manager:CreateLabel("House Textures: 0 ($0)", "grid-2x2")
-	task.wait(0.3)
 	local ambiance_label = Manager:CreateLabel("House Ambiance: No", "sun")
-	task.wait(0.3)
 	local type_label = Manager:CreateLabel("House Type: -", "home")
 
 	local scanInfoGui
@@ -234,9 +310,9 @@ local function loadMain()
 		title.Parent = scanInfoFrame
 
 		local entries = {
-			{ name = "Furniture", y = 40 },
-			{ name = "Textures", y = 62 },
-			{ name = "Ambiance", y = 84 },
+			{ name = "Furniture",  y = 40 },
+			{ name = "Textures",   y = 62 },
+			{ name = "Ambiance",   y = 84 },
 			{ name = "House Type", y = 106 },
 		}
 		for _, entry in ipairs(entries) do
@@ -263,11 +339,8 @@ local function loadMain()
 	end
 
 	Manager:CreateSection("Process Status")
-	task.wait(0.3)
 	local status_label = Manager:CreateLabel("Building Status: Idle", "activity")
-	task.wait(0.3)
 	local prog_label = Manager:CreateLabel("Building Prog: -", "trending-up")
-	task.wait(0.3)
 	local item_label = Manager:CreateLabel("Items: -", "box")
 
 	local function setscaninfo(f_count, f_cost, t_count, t_cost, amb, typ)
@@ -431,7 +504,8 @@ local function loadMain()
 			ownedHouseMap[label] = house.house_id
 			ownedHouseLabelById[house.house_id] = label
 			local houseType = house.building_type or house.kind or house.type or "unknown"
-			ownedHouseTypeMap[house.house_id] = resolveExactHouseType(houseType) or resolveHouseType(houseType) or tostring(houseType)
+			ownedHouseTypeMap[house.house_id] = resolveExactHouseType(houseType) or resolveHouseType(houseType) or
+				tostring(houseType)
 		end
 
 		table.sort(ownedHouseList)
@@ -475,12 +549,11 @@ local function loadMain()
 	local autoTradeEnabled = false
 	local selectedPlayer = nil
 	local autoAcceptToggle
-	local autoAcceptPlayerInput
 	local PlayerDropdown
 	local getPlayers
-
 	local skipCompletedHouses = true
 	local autoPasteMode = "fast"
+	local autoPasteSource = "loaded"
 
 	local kaliremAP = {
 		enabled = false,
@@ -488,7 +561,7 @@ local function loadMain()
 		changing = false,
 		autoSelected = {},
 	}
-	
+
 	local fileQueue = {}
 	local fqAllFiles = {}
 	local fqSearchQuery = ""
@@ -505,6 +578,7 @@ local function loadMain()
 	local autoPasteProgress
 	local autoPastePastebinValue = ""
 	local autoPasteQueueCopies = 1
+	local autoPasteSourceDropdown
 	local autoPasteConfigReady = false
 	local autoPasteSaveState = { pending = false, dirty = false, lastError = nil }
 	local saveAutoPasteConfig
@@ -533,15 +607,6 @@ local function loadMain()
 		if ok and type(result) == "table" then return result end
 		return nil
 	end
-
-	-- Restore Auto Accept before creating its controls so their initial UI state
-	-- matches the last saved Auto Paste config instead of starting at false.
-	local earlyAutoPasteConfig = safeReadJSON(autoPasteConfigPath)
-	if earlyAutoPasteConfig then
-		selectedPlayer = type(earlyAutoPasteConfig.autoAcceptPlayer) == "string"
-			and earlyAutoPasteConfig.autoAcceptPlayer or nil
-		autoTradeEnabled = earlyAutoPasteConfig.autoAcceptEnabled == true
-	end
 	local function persistCheckpoint(value)
 		pasteCheckpoint = value
 		return safeWriteJSON(pasteCheckpointPath, value or { state = "idle" })
@@ -563,8 +628,10 @@ local function loadMain()
 	end
 	local function recordPasteSuccess(houseId, houseName, sourceName)
 		pasteHistory[tostring(houseId)] = {
-			house_id = tostring(houseId), name = tostring(houseName),
-			source = tostring(sourceName or "File Queue"), timestamp = os.time()
+			house_id = tostring(houseId),
+			name = tostring(houseName),
+			source = tostring(sourceName or "Loaded House"),
+			timestamp = os.time()
 		}
 		saveHistory()
 		-- The new purchase is now legitimately completed.
@@ -681,8 +748,11 @@ local function loadMain()
 			for _, t in pairs(decoded.t or {}) do
 				local room = t.r
 				if not textures[room] then textures[room] = {} end
-				if t.k == "walls" then textures[room].walls = t.i
-				elseif t.k == "floors" then textures[room].floors = t.i end
+				if t.k == "walls" then
+					textures[room].walls = t.i
+				elseif t.k == "floors" then
+					textures[room].floors = t.i
+				end
 			end
 			decoded.textures = textures
 			decoded.building_type = decoded.b
@@ -706,7 +776,10 @@ local function loadMain()
 			end
 		end
 
-		if decoded.BuildType then decoded.building_type = decoded.BuildType decoded.BuildType = nil end
+		if decoded.BuildType then
+			decoded.building_type = decoded.BuildType
+			decoded.BuildType = nil
+		end
 
 		if decoded.furnitures and #decoded.furnitures > 0 then
 			local function convertColors(obj)
@@ -735,8 +808,11 @@ local function loadMain()
 			local textures = {}
 			for _, t in ipairs(decoded.textures or {}) do
 				if not textures[t.room] then textures[t.room] = {} end
-				if t.type == "walls" then textures[t.room].walls = t.id
-				elseif t.type == "floors" then textures[t.room].floors = t.id end
+				if t.type == "walls" then
+					textures[t.room].walls = t.id
+				elseif t.type == "floors" then
+					textures[t.room].floors = t.id
+				end
 			end
 			decoded.textures = textures
 			if decoded.ambiance then decoded.ambiance = convertColors(decoded.ambiance) end
@@ -911,6 +987,28 @@ local function loadMain()
 		end
 	end
 
+	local updatingPasteSourceUI = false
+	local function setAutoPasteSource(source, fromDropdown)
+		source = source == "filequeue" and "filequeue" or "loaded"
+		local changed = autoPasteSource ~= source
+		autoPasteSource = source
+		if fromDropdown or updatingPasteSourceUI or not autoPasteSourceDropdown then
+			return changed
+		end
+		local desired = source == "filequeue" and "File Queue" or "Loaded House"
+		local current = autoPasteSourceDropdown.CurrentOption
+		if type(current) == "table" then current = current[1] end
+		if current ~= desired then
+			updatingPasteSourceUI = true
+			local ok, err = pcall(function()
+				autoPasteSourceDropdown:Set(desired)
+			end)
+			updatingPasteSourceUI = false
+			if not ok then warn("[Cubix] Paste Source UI sync failed:", err) end
+		end
+		return changed
+	end
+
 	local function rebuildQueueLabel()
 		if fqQueueListLabel then
 			local count = #fileQueue
@@ -1026,9 +1124,6 @@ local function loadMain()
 	end
 
 	refreshQueueViewer = function()
-		-- Always synchronize the Rayfield counters from the live queue, even
-		-- when the custom queue window is closed or has not been created yet.
-		pcall(setAPFileInfo)
 		if not queueViewerGui or not queueViewerGui.Parent or not queueViewerGui.Enabled then return end
 		if not queueViewerList then return end
 		for _, child in ipairs(queueViewerList:GetChildren()) do
@@ -1064,7 +1159,8 @@ local function loadMain()
 				info.BackgroundTransparency = 1
 				info.TextXAlignment = Enum.TextXAlignment.Left
 				info.TextTruncate = Enum.TextTruncate.AtEnd
-				info.Text = tostring(getFileHouseType(entry.houseData)) .. "  •  $" .. tostring(getQueueHouseCost(entry.houseData))
+				info.Text = tostring(getFileHouseType(entry.houseData)) ..
+					"  •  $" .. tostring(getQueueHouseCost(entry.houseData))
 				info.TextColor3 = Color3.fromRGB(189, 177, 213)
 				info.Font = Enum.Font.Gotham
 				info.TextSize = 11
@@ -1088,7 +1184,12 @@ local function loadMain()
 					-- Avoid changing indices while an active paste/buy task uses the queue.
 					if autoPasteRunning or autoBuyQueuedRunning then
 						pcall(function()
-							Rayfield:Notify({Title="File Queue", Content="Stop Auto Paste / Auto Buy before removing queue entries.", Duration=4})
+							Rayfield:Notify({
+								Title = "File Queue",
+								Content =
+								"Stop Auto Paste / Auto Buy before removing queue entries.",
+								Duration = 4
+							})
 						end)
 						return
 					end
@@ -1100,7 +1201,14 @@ local function loadMain()
 					local ok, saved, saveErr = pcall(saveAutoPasteConfig)
 					if not ok or not saved then
 						warn("[Cubix Queue] Could not save removal:", tostring(saveErr or saved))
-						pcall(function() Rayfield:Notify({Title="File Queue", Content="Removed, but failed to save. Check console.", Duration=5}) end)
+						pcall(function()
+							Rayfield:Notify({
+								Title = "File Queue",
+								Content =
+								"Removed, but failed to save. Check console.",
+								Duration = 5
+							})
+						end)
 					else
 						print("[Cubix Queue] Removed:", tostring(removed.filename), "| Remaining:", #fileQueue)
 					end
@@ -1110,7 +1218,6 @@ local function loadMain()
 		if queueViewerCount then
 			queueViewerCount.Text = string.format("%d shown  •  %d queued  •  scroll to browse", shown, #fileQueue)
 		end
-		pcall(setAPFileInfo)
 	end
 
 	local function removeCompletedQueueEntry(entry, expectedIndex)
@@ -1297,12 +1404,15 @@ local function loadMain()
 				if not ok then return false, "Could not save queue data: " .. tostring(err) end
 			end
 			table.insert(slimQueue, {
-				queueId = id, dataId = sourceId,
-				filename = entry.filename, sourceName = entry.sourceName
+				queueId = id,
+				dataId = sourceId,
+				filename = entry.filename,
+				sourceName = entry.sourceName
 			})
 		end
 		local config = {
-			version = 5,
+			version = 4,
+			source = autoPasteSource,
 			pasteMode = autoPasteMode,
 			autoPasteKaliremEnabled = false,
 			queueCopies = autoPasteQueueCopies,
@@ -1362,6 +1472,7 @@ local function loadMain()
 			end
 		end
 
+		autoPasteSource = config.source == "filequeue" and "filequeue" or "loaded"
 		autoPasteMode = config.pasteMode == "slow" and "slow" or "fast"
 		kaliremAP.enabled = false
 		autoPasteQueueCopies = math.clamp(math.floor(tonumber(config.queueCopies) or 1), 1, 50)
@@ -1382,6 +1493,7 @@ local function loadMain()
 			missingTargets += 1
 		end
 
+		setAutoPasteSource(autoPasteSource)
 		if autoPasteDropdown then
 			autoPasteApplyingSavedTargets = true
 			pcall(function()
@@ -1394,11 +1506,9 @@ local function loadMain()
 		autoPasteApplyingSavedTargets = true
 		if PlayerDropdown then
 			pcall(function()
+				PlayerDropdown:Refresh(getPlayers())
 				PlayerDropdown:Set(selectedPlayer or "None")
 			end)
-		end
-		if autoAcceptPlayerInput then
-			pcall(function() autoAcceptPlayerInput:Set(selectedPlayer or "") end)
 		end
 		if autoAcceptToggle then
 			pcall(function() autoAcceptToggle:Set(autoTradeEnabled) end)
@@ -1413,7 +1523,6 @@ local function loadMain()
 	end
 
 	local function autoSaveAutoPasteConfig()
-
 		autoPasteSaveState.dirty = true
 		if not autoPasteConfigReady then return end
 		if autoPasteSaveState.pending then return end
@@ -1430,7 +1539,6 @@ local function loadMain()
 			elseif not savedOk then
 				warn("[Cubix AutoSave] " .. tostring(saveErr))
 			end
-
 		end)
 	end
 
@@ -1469,10 +1577,22 @@ local function loadMain()
 	end
 
 	refreshOwnedHouses()
-	task.wait(0.3)
-	AutoPasteTab:CreateLabel("Queue saved house files or Pastebin data, then paste each item into a matching target house.", "info")
+	AutoPasteTab:CreateLabel("Use the current loaded house, or queue files from HouseFS/Houses.", "info")
 
-	AutoPasteTab:CreateSection("Queue Options")
+	AutoPasteTab:CreateSection("Source")
+	autoPasteSourceDropdown = AutoPasteTab:CreateDropdown({
+		Name = "Paste Source",
+		Options = { "Loaded House", "File Queue" },
+		CurrentOption = { "Loaded House" },
+		MultipleOptions = false,
+		Flag = "AutoPasteSource",
+		Callback = function(opt)
+			if updatingPasteSourceUI then return end
+			local v = (typeof(opt) == "table") and opt[1] or opt
+			local changed = setAutoPasteSource(v == "File Queue" and "filequeue" or "loaded", true)
+			if changed then autoSaveAutoPasteConfig() end
+		end,
+	})
 
 	autoBuyQueuedToggle = AutoPasteTab:CreateToggle({
 		Name = "Auto Buy Queued Houses",
@@ -1486,7 +1606,7 @@ local function loadMain()
 		end,
 	})
 
-	AutoPasteTab:CreateSection("Queue Items")
+	AutoPasteTab:CreateSection("File Queue")
 	AutoPasteTab:CreateInput({
 		Name = "Copies To Queue",
 		PlaceholderText = "1",
@@ -1545,6 +1665,7 @@ local function loadMain()
 			for _, filename in ipairs(selected) do
 				local houseData, err = loadHouseDataFromFile(filename)
 				if houseData then
+					setAutoPasteSource("filequeue")
 					for copyIndex = 1, autoPasteQueueCopies do
 						local displayName = filename
 						if autoPasteQueueCopies > 1 then
@@ -1555,7 +1676,8 @@ local function loadMain()
 					end
 					Rayfield:Notify({
 						Title = "File Queue",
-						Content = "Added " .. autoPasteQueueCopies .. "x " .. filename .. " [" .. getFileHouseType(houseData) .. "]",
+						Content = "Added " ..
+							autoPasteQueueCopies .. "x " .. filename .. " [" .. getFileHouseType(houseData) .. "]",
 						Duration = 2,
 					})
 				else
@@ -1579,7 +1701,6 @@ local function loadMain()
 		end,
 	})
 
-	task.wait(0.3)
 	fqQueueListLabel = AutoPasteTab:CreateLabel("Queue: 0 file(s) | Next: (empty)", "list")
 	AutoPasteTab:CreateButton({
 		Name = "View Queue (Scrollable)",
@@ -1587,7 +1708,14 @@ local function loadMain()
 			local ok, err = pcall(createQueueViewer)
 			if not ok or not queueViewerGui then
 				warn("[Cubix Queue] Custom window unavailable: " .. tostring(err))
-				pcall(function() Rayfield:Notify({Title="Queue Viewer", Content="Executor denied custom GUI access. Queue still works.", Duration=5}) end)
+				pcall(function()
+					Rayfield:Notify({
+						Title = "Queue Viewer",
+						Content =
+						"Executor denied custom GUI access. Queue still works.",
+						Duration = 5
+					})
+				end)
 				return
 			end
 			queueViewerGui.Enabled = true
@@ -1620,6 +1748,7 @@ local function loadMain()
 
 			local pasteId = tostring(pasteIdOrErr)
 			local baseName = "Pastebin_" .. pasteId
+			setAutoPasteSource("filequeue")
 			for copyIndex = 1, autoPasteQueueCopies do
 				local displayName = baseName
 				if autoPasteQueueCopies > 1 then
@@ -1640,7 +1769,8 @@ local function loadMain()
 
 			Rayfield:Notify({
 				Title = "Pastebin Queue",
-				Content = "Added " .. autoPasteQueueCopies .. "x " .. baseName .. " [" .. getFileHouseType(houseData) .. "]",
+				Content = "Added " ..
+					autoPasteQueueCopies .. "x " .. baseName .. " [" .. getFileHouseType(houseData) .. "]",
 				Duration = 3,
 			})
 		end,
@@ -1749,7 +1879,6 @@ local function loadMain()
 		if changed then
 			kaliremAP.refreshDropdown()
 		end
-
 	end
 
 	function kaliremAP.setToggle(value, silent)
@@ -1768,7 +1897,6 @@ local function loadMain()
 
 		local added = 0
 		if value then
-			
 			added = kaliremAP.selectAvailable(true)
 		else
 			kaliremAP.removeAutomatic()
@@ -1830,7 +1958,6 @@ local function loadMain()
 	AutoPasteTab:CreateButton({
 		Name = "Refresh House List",
 		Callback = function()
-
 			refreshOwnedHouses()
 			restorePendingAutoPasteTargets(true)
 
@@ -1878,21 +2005,22 @@ local function loadMain()
 				count += 1
 				print("[Cubix History]", id, record.name, record.source, record.timestamp)
 			end
-			Rayfield:Notify({Title = "Completed History", Content = tostring(count) .. " completed house ID(s). Details in console.", Duration = 5})
+			Rayfield:Notify({
+				Title = "Completed History",
+				Content = tostring(count) ..
+					" completed house ID(s). Details in console.",
+				Duration = 5
+			})
 		end,
 	})
 
-	task.wait(0.3)
 	autoPasteStatus = AutoPasteTab:CreateLabel("Status: Idle", "activity")
-	task.wait(0.3)
 	autoPasteProgress = AutoPasteTab:CreateLabel("Progress: -", "trending-up")
-	task.wait(0.3)
 	autoPasteFileInfo = AutoPasteTab:CreateLabel("File Queue: 0 file(s)", "list")
-	task.wait(0.3)
 	autoPasteQueueCostLabel = AutoPasteTab:CreateLabel("Queued Total Cost: $0", "list")
 
 	local function setAPStatus(s) pcall(function() autoPasteStatus:Set("Status: " .. s) end) end
-	local function setAPProg(s)   pcall(function() autoPasteProgress:Set("Progress: " .. s) end) end
+	local function setAPProg(s) pcall(function() autoPasteProgress:Set("Progress: " .. s) end) end
 
 	local function waitUntilInsideHouse(targetId, timeout)
 		timeout = timeout or 30
@@ -1920,7 +2048,7 @@ local function loadMain()
 		local maxAttempts = 3
 		local readOk, interior = pcall(function() return cd.get("house_interior") end)
 		if readOk and interior and tostring(interior.house_id) == tostring(houseId) then
-			return true 
+			return true
 		end
 
 		for attempt = 1, maxAttempts do
@@ -1944,7 +2072,6 @@ local function loadMain()
 			end)
 
 			if spawnOk then
-
 				local loadStarted = tick()
 				while tick() - loadStarted < 4 do
 					if stopFlag or not autoPasteRunning then
@@ -2069,12 +2196,15 @@ local function loadMain()
 				end
 			end
 		end
-		if count == 0 then return false, "No available furniture with valid positions to paste (skipped " .. skipped .. ")" end
+		if count == 0 then
+			return false,
+				"No available furniture with valid positions to paste (skipped " .. skipped .. ")"
+		end
 		local moneyOk, data = pcall(function() return cd.get_data()[plr.Name] end)
 		local money = moneyOk and type(data) == "table" and tonumber(data.money) or nil
 		if not money then return false, "Could not verify your current money" end
 		for _, texture in pairs(houseData.textures or {}) do
-			for _, key in ipairs({"walls", "floors"}) do
+			for _, key in ipairs({ "walls", "floors" }) do
 				if texture[key] and texture[key] ~= "tile" then
 					local db = texturesdb[key] and texturesdb[key][texture[key]]
 					if not db then return false, "Unavailable texture: " .. tostring(texture[key]) end
@@ -2083,7 +2213,8 @@ local function loadMain()
 			end
 		end
 		if money < cost then return false, "Insufficient money: need $" .. cost .. ", have $" .. money end
-		return true, "Preflight passed: " .. count .. " available furniture; skipped " .. skipped .. "; estimated $" .. cost
+		return true,
+			"Preflight passed: " .. count .. " available furniture; skipped " .. skipped .. "; estimated $" .. cost
 	end
 
 	local function pasteIntoHouse(houseId, houseName, houseData, mode, expectedType)
@@ -2122,7 +2253,8 @@ local function loadMain()
 				Rayfield:Notify({
 					Title = "Auto Paste Safety Stop",
 					Content = reason .. "\nHouse ID: " .. tostring(houseId)
-						.. (mutationStarted and "\nPartial work may remain; an in-flight request may still finish." or "\nFurniture was not cleared.")
+						..
+						(mutationStarted and "\nPartial work may remain; an in-flight request may still finish." or "\nFurniture was not cleared.")
 						.. "\nTarget and queue item kept. Rename, then restart to rebuild this target.",
 					Duration = 10,
 				})
@@ -2157,7 +2289,7 @@ local function loadMain()
 		end
 
 		setAPStatus("Entering house")
-		Rayfield:Notify({ Title = "Auto Paste", Content = "Entering target house: " .. houseName, Duration = 3 })
+		Rayfield:Notify({ Title = "Auto Paste", Content = "Entering loaded house: " .. houseName, Duration = 3 })
 
 		local inside = alreadyInside == true
 		local lastEnterErr = nil
@@ -2185,7 +2317,7 @@ local function loadMain()
 		if not inside then
 			Rayfield:Notify({
 				Title = "Auto Paste",
-				Content = "Could not verify the selected target house " .. houseName
+				Content = "Could not verify the exact loaded house " .. houseName
 					.. ". Nothing was cleared or pasted."
 					.. (lastEnterErr and ("\n" .. tostring(lastEnterErr)) or ""),
 				Duration = 6,
@@ -2233,16 +2365,33 @@ local function loadMain()
 			if not okCount or not current then return false end
 			local currentCount = countFurniture(current)
 			if currentCount > 0 then
-				Rayfield:Notify({ Title = "Resume Requires Review", Content = "Interrupted clear/paste detected in " .. houseName .. ". Not clearing or replaying to avoid duplicates. Inspect the house first.", Duration = 9 })
+				Rayfield:Notify({
+					Title = "Resume Requires Review",
+					Content = "Interrupted clear/paste detected in " ..
+						houseName .. ". Not clearing or replaying to avoid duplicates. Inspect the house first.",
+					Duration = 9
+				})
 				exitCurrentHouse()
 				return false
 			end
 		end
-		persistCheckpoint({state = "clearing", house_id = tostring(houseId), house_name = houseName, started_at = os.time(), source_count = countFurniture(houseData)})
+		persistCheckpoint({
+			state = "clearing",
+			house_id = tostring(houseId),
+			house_name = houseName,
+			started_at = os
+				.time(),
+			source_count = countFurniture(houseData)
+		})
 		mutationStarted = true
 		local cleared, clearErr = clearCurrentHouseFurniture(15, checkTargetName)
 		if not cleared then
-			Rayfield:Notify({ Title = "Auto Paste", Content = "Could not clear " .. houseName .. ": " .. tostring(clearErr), Duration = 5 })
+			Rayfield:Notify({
+				Title = "Auto Paste",
+				Content = "Could not clear " ..
+					houseName .. ": " .. tostring(clearErr),
+				Duration = 5
+			})
 			exitCurrentHouse()
 			return false
 		end
@@ -2251,7 +2400,14 @@ local function loadMain()
 			return false
 		end
 
-		persistCheckpoint({state = "pasting", house_id = tostring(houseId), house_name = houseName, started_at = os.time(), source_count = countFurniture(houseData)})
+		persistCheckpoint({
+			state = "pasting",
+			house_id = tostring(houseId),
+			house_name = houseName,
+			started_at = os
+				.time(),
+			source_count = countFurniture(houseData)
+		})
 		local monitoring = true
 		task.spawn(function()
 			while monitoring do
@@ -2280,7 +2436,7 @@ local function loadMain()
 			exitCurrentHouse()
 			return false
 		end
-		recordPasteSuccess(houseId, houseName, "File Queue")
+		recordPasteSuccess(houseId, houseName, autoPasteSource == "filequeue" and "File Queue" or "Loaded House")
 		deselectAutoPasteTarget(houseId)
 		autoSaveAutoPasteConfig()
 
@@ -2353,7 +2509,15 @@ local function loadMain()
 				})
 			end
 
-			if #fileQueue == 0 then
+			if autoPasteSource == "loaded" and not savedhouse then
+				return Rayfield:Notify({
+					Title = "Auto Paste",
+					Content = "No house loaded.\nPlease scan or load a house first.",
+					Duration = 4,
+				})
+			end
+
+			if autoPasteSource == "filequeue" and #fileQueue == 0 then
 				return Rayfield:Notify({
 					Title = "Auto Paste",
 					Content = "File Queue is empty.\nAdd files first.",
@@ -2402,7 +2566,22 @@ local function loadMain()
 					setAPFileInfo()
 				end)
 
-				if #fileQueue > 0 then
+				if autoPasteSource == "loaded" then
+					local total = #candidateIds
+					for i, houseId in ipairs(candidateIds) do
+						if stopFlag or not autoPasteRunning then break end
+						local houseName = autoPasteSelections[houseId] or tostring(houseId)
+						local expectedType = nil
+						if not (IgnoreTypeCheck and IgnoreTypeCheck.CurrentValue) then
+							expectedType = getSavedHouseExactType(savedhouse)
+						end
+						setAPProg(i .. "/" .. total .. " - " .. houseName)
+						if pasteIntoHouse(houseId, houseName, savedhouse, autoPasteMode, expectedType) == true then
+							Rayfield:Notify({ Title = "Auto Paste", Content = houseName .. " done", Duration = 2 })
+						end
+						task.wait(1)
+					end
+				elseif autoPasteSource == "filequeue" then
 					local usedHouseIds = {}
 					local totalFiles = #fileQueue
 					local fileIndex = 1
@@ -2417,7 +2596,8 @@ local function loadMain()
 						if not matchedId then
 							Rayfield:Notify({
 								Title = "Auto Paste",
-								Content = "No matching house for " .. fileEntry.filename .. " [" .. fileType .. "], skipping",
+								Content = "No matching house for " ..
+									fileEntry.filename .. " [" .. fileType .. "], skipping",
 								Duration = 5,
 							})
 							progressIndex += 1
@@ -2426,16 +2606,19 @@ local function loadMain()
 						end
 
 						local houseName = autoPasteSelections[matchedId] or tostring(matchedId)
-						setAPProg(currentProgress .. "/" .. totalFiles .. " - " .. fileEntry.filename .. " -> " .. houseName)
+						setAPProg(currentProgress ..
+							"/" .. totalFiles .. " - " .. fileEntry.filename .. " -> " .. houseName)
 
-						local pasteResult = pasteIntoHouse(matchedId, houseName, fileEntry.houseData, autoPasteMode, fileType)
+						local pasteResult = pasteIntoHouse(matchedId, houseName, fileEntry.houseData, autoPasteMode,
+							fileType)
 						if pasteResult == true then
 							progressIndex += 1
 							usedHouseIds[matchedId] = true
 
 							local removedOk = removeCompletedQueueEntry(fileEntry, fileIndex)
 							if not removedOk then
-								warn("[Auto Paste] Paste succeeded but queue removal failed for " .. tostring(fileEntry.filename))
+								warn("[Auto Paste] Paste succeeded but queue removal failed for " ..
+									tostring(fileEntry.filename))
 							end
 							Rayfield:Notify({
 								Title = "Auto Paste",
@@ -2455,7 +2638,7 @@ local function loadMain()
 
 				local wasStopped = stopFlag
 				autoPasteRunning = false
-				
+
 				rebuildQueueLabel()
 				setAPFileInfo()
 				pcall(saveAutoPasteConfig)
@@ -2465,7 +2648,6 @@ local function loadMain()
 					Rayfield:Notify({ Title = "Auto Paste", Content = "Auto paste finished", Duration = 5 })
 				end
 				if autoListAfterPaste and not wasStopped then
-
 					processAutoList()
 				end
 			end)
@@ -2475,10 +2657,10 @@ local function loadMain()
 	AutoPasteTab:CreateButton({
 		Name = "Stop",
 		Callback = function()
-				autoPasteRunning = false
-				stopFlag = true
-				autoSaveAutoPasteConfig()
-				setAPStatus("Stopped")
+			autoPasteRunning = false
+			stopFlag = true
+			autoSaveAutoPasteConfig()
+			setAPStatus("Stopped")
 			setAPProg("-")
 			Rayfield:Notify({ Title = "Auto Paste", Content = "Stopped", Duration = 3 })
 		end,
@@ -2654,7 +2836,6 @@ local function loadMain()
 
 		task.spawn(function()
 			local ok, err = pcall(function()
-
 				local required = {}
 
 				for _, entry in ipairs(fileQueue) do
@@ -2685,10 +2866,10 @@ local function loadMain()
 
 						for _, candidate in ipairs(candidates) do
 							if candidate and (
-								string.lower(tostring(candidate))
+									string.lower(tostring(candidate))
 									== string.lower(tostring(houseType))
-								or isExactSameHouseType(houseType, candidate)
-							) then
+									or isExactSameHouseType(houseType, candidate)
+								) then
 								buyKind = data.kind or dbKind
 								break
 							end
@@ -2754,14 +2935,20 @@ local function loadMain()
 								boughtTotal += 1
 								Rayfield:Notify({
 									Title = "Auto Buy",
-									Content = "Bought queued " .. tostring(kind) .. " (" .. i .. "/" .. needed .. ")\nTotal: " .. boughtTotal .. "/" .. totalRequired,
+									Content = "Bought queued " ..
+										tostring(kind) ..
+										" (" .. i .. "/" .. needed .. ")\nTotal: " .. boughtTotal .. "/" .. totalRequired,
 									Duration = 2,
 								})
 							else
-								Rayfield:Notify({ Title = "Auto Buy", Content = "Purchase was not confirmed for " .. tostring(kind), Duration = 4 })
+								Rayfield:Notify({
+									Title = "Auto Buy",
+									Content = "Purchase was not confirmed for " ..
+										tostring(kind),
+									Duration = 4
+								})
 								break
 							end
-
 						else
 							Rayfield:Notify({
 								Title = "Auto Buy",
@@ -3125,7 +3312,6 @@ local function loadMain()
 	local autoTradeToggle
 
 	local function getKaliremTradeHouses()
-
 		local manager = {}
 		pcall(function()
 			manager = ClientData.get("house_manager") or {}
@@ -3165,7 +3351,6 @@ local function loadMain()
 	end
 
 	local function refreshKaliremTradeSelections()
-
 		return #getKaliremTradeHouses()
 	end
 
@@ -3174,7 +3359,6 @@ local function loadMain()
 	end
 
 	processAutoList = function()
-
 		if autoTradeLoopRunning then return end
 
 		autoTradeLoopToken += 1
@@ -3192,7 +3376,6 @@ local function loadMain()
 			end
 
 			while autoTradeStillEnabled() do
-
 				if autoPasteRunning then
 					task.wait(0.5)
 					continue
@@ -3201,7 +3384,6 @@ local function loadMain()
 				local matches = getKaliremTradeHouses()
 
 				if #matches == 0 then
-
 					if tradedAnyThisRun then
 						Rayfield:Notify({
 							Title = "Auto Trade",
@@ -3306,7 +3488,6 @@ local function loadMain()
 					end
 
 					if tick() - lastListAttempt >= 4 then
-
 						if not autoTradeStillEnabled() then break end
 
 						lastListAttempt = tick()
@@ -3360,7 +3541,6 @@ local function loadMain()
 
 				processAutoList()
 			else
-
 				autoTradeLoopToken += 1
 				autoTradeLoopRunning = false
 				autoTradeWaitingNoticeShown = false
@@ -3420,11 +3600,10 @@ local function loadMain()
 		return t
 	end
 
-	task.wait(0.3)
-	Tab:CreateLabel("If you are using glitch houses, use the slow paste. And if you are using normal houses, use the fast paste. If you use it on higher builds expect lagging or crashing.",
+	Tab:CreateLabel(
+		"If you are using glitch houses, use the slow paste. And if you are using normal houses, use the fast paste. If you use it on higher builds expect lagging or crashing.",
 		"info"
 	)
-	task.wait(0.3)
 	Tab:CreateLabel("Do not Touch", "info")
 
 	Pastetextures = Tab:CreateToggle({
@@ -3508,7 +3687,9 @@ local function loadMain()
 				table.insert(names, kind)
 			end
 		end
-		local content = "Skipped " .. #items .. " unavailable furniture item(s). Auto Paste will continue and remove the completed house from the queue."
+		local content = "Skipped " ..
+			#items ..
+			" unavailable furniture item(s). Auto Paste will continue and remove the completed house from the queue."
 		if #names <= 3 then
 			content = content .. "\n" .. table.concat(names, ", ")
 		else
@@ -3546,7 +3727,8 @@ local function loadMain()
 		end)
 		if not ok then return false end
 		task.wait(0.2)
-		return textureexists(room, texturetype, texture) or buytexturewithretry(room, texturetype, texture, tries + 1, safetyCheck)
+		return textureexists(room, texturetype, texture) or
+			buytexturewithretry(room, texturetype, texture, tries + 1, safetyCheck)
 	end
 
 	local max_retries = 3
@@ -3626,7 +3808,6 @@ local function loadMain()
 					if not editOk then
 						lastErr = "StartEditingMannequin: " .. tostring(editResult)
 					else
-
 						task.wait(0.2)
 						if stopFlag or (safetyCheck and not safetyCheck()) then return false end
 						local saveOk, saveResult = pcall(function()
@@ -3660,7 +3841,8 @@ local function loadMain()
 		if applied < #outfitRequests then
 			Rayfield:Notify({
 				Title = "Outfits",
-				Content = "Applied " .. applied .. "/" .. #outfitRequests .. " mannequin outfit(s). Check console for failed ones.",
+				Content = "Applied " ..
+					applied .. "/" .. #outfitRequests .. " mannequin outfit(s). Check console for failed ones.",
 				Duration = 5,
 			})
 		end
@@ -3696,7 +3878,8 @@ local function loadMain()
 					if typeof(color) == "Color3" then
 						normalized[tonumber(colorIndex) or colorIndex] = color
 					elseif type(color) == "table" then
-						normalized[tonumber(colorIndex) or colorIndex] = Color3.new(color[1] or color.R or color.r or 1, color[2] or color.G or color.g or 1, color[3] or color.B or color.b or 1)
+						normalized[tonumber(colorIndex) or colorIndex] = Color3.new(color[1] or color.R or color.r or 1,
+							color[2] or color.G or color.g or 1, color[3] or color.B or color.b or 1)
 					end
 				end
 				item.properties.colors = normalized
@@ -3713,12 +3896,14 @@ local function loadMain()
 				allSuccessful = false
 				warn("Furniture batch invoke failed:", invokeErr)
 			else
-
 				local confirmed = false
 				local started = tick()
 				while tick() - started < math.max(4, delay_seconds + 3) do
 					if stopFlag or (safetyCheck and not safetyCheck()) then return false end
-					local afterOk, afterCount = pcall(function() return countfurnitures(cd.get("house_interior").furniture) end)
+					local afterOk, afterCount = pcall(function()
+						return countfurnitures(cd.get("house_interior")
+							.furniture)
+					end)
 					if afterOk and afterCount - beforeCount >= #batch then
 						confirmed = true
 						break
@@ -3729,7 +3914,14 @@ local function loadMain()
 					placed += #batch
 				else
 					allSuccessful = false
-					Rayfield:Notify({ Title = "Warning", Content = "Batch " .. batchIndex .. " was not fully confirmed. It will not be resent to avoid duplicates.", Duration = 6, Image = "circle-alert" })
+					Rayfield:Notify({
+						Title = "Warning",
+						Content = "Batch " ..
+							batchIndex .. " was not fully confirmed. It will not be resent to avoid duplicates.",
+						Duration = 6,
+						Image =
+						"circle-alert"
+					})
 				end
 			end
 			updateprog(placed .. "/" .. totalfurnitures)
@@ -3791,9 +3983,21 @@ local function loadMain()
 			updatestatus("Clearing House")
 			local cleared, err = clearCurrentHouseFurniture(15)
 			if cleared then
-				Rayfield:Notify({ Title = "Success", Content = "House cleared successfully!", Duration = 3, Image = "circle-check" })
+				Rayfield:Notify({
+					Title = "Success",
+					Content = "House cleared successfully!",
+					Duration = 3,
+					Image =
+					"circle-check"
+				})
 			else
-				Rayfield:Notify({ Title = "Error", Content = "House clear failed: " .. tostring(err), Duration = 4, Image = "circle-alert" })
+				Rayfield:Notify({
+					Title = "Error",
+					Content = "House clear failed: " .. tostring(err),
+					Duration = 4,
+					Image =
+					"circle-alert"
+				})
 			end
 			updatestatus("Idle")
 		end,
@@ -3819,8 +4023,12 @@ local function loadMain()
 			end
 			if type(v.cframe) == "table" then
 				local ok, cf = pcall(function() return CFrame.new(table.unpack(v.cframe)) end)
-				if ok and cf then v.cframe = cf
-				else warn("[SKIP] Could not convert cframe for:", v.id) continue end
+				if ok and cf then
+					v.cframe = cf
+				else
+					warn("[SKIP] Could not convert cframe for:", v.id)
+					continue
+				end
 			end
 			if typeof(v.cframe) == "CFrame" then
 				validFurniture[i] = v
@@ -3841,8 +4049,16 @@ local function loadMain()
 			if stopFlag or (safetyCheck and not safetyCheck()) then break end
 			local canbuy, exists = canbuyfurniture(v.id)
 			if not canbuy and exists == true then
-				updatestatus("Idle") updateprog("-") updateitem("-")
-				Rayfield:Notify({ Title = "Error", Content = "Insufficient funds for furniture: " .. v.id, Duration = 3, Image = "circle-alert" })
+				updatestatus("Idle")
+				updateprog("-")
+				updateitem("-")
+				Rayfield:Notify({
+					Title = "Error",
+					Content = "Insufficient funds for furniture: " .. v.id,
+					Duration = 3,
+					Image =
+					"circle-alert"
+				})
 				return false
 			elseif not canbuy and exists == false then
 				table.insert(unavailableFurniture, v.id)
@@ -3880,15 +4096,25 @@ local function loadMain()
 		notifyUnavailableFurniture(unavailableFurniture)
 
 		if stopFlag or (safetyCheck and not safetyCheck()) then
-			updatestatus("Stopped") updateprog("-") updateitem("-")
+			updatestatus("Stopped")
+			updateprog("-")
+			updateitem("-")
 			return false
 		end
 
 		if #furniturest > 0 then
 			local affordable, requiredCost, availableMoney = canAffordFurnitureRequests(furniturest)
 			if not affordable then
-				Rayfield:Notify({ Title = "Error", Content = "Not enough money for this paste. Need $" .. requiredCost .. ", have $" .. availableMoney, Duration = 5, Image = "circle-alert" })
-				updatestatus("Idle") updateprog("-") updateitem("-")
+				Rayfield:Notify({
+					Title = "Error",
+					Content = "Not enough money for this paste. Need $" ..
+						requiredCost .. ", have $" .. availableMoney,
+					Duration = 5,
+					Image = "circle-alert"
+				})
+				updatestatus("Idle")
+				updateprog("-")
+				updateitem("-")
 				return false
 			end
 			local beforeOk, beforeCount = pcall(function() return countfurnitures(cd.get("house_interior").furniture) end)
@@ -3906,11 +4132,20 @@ local function loadMain()
 			while tick() - started < 6 do
 				if stopFlag or (safetyCheck and not safetyCheck()) then return false end
 				local afterOk, afterCount = pcall(function() return countfurnitures(cd.get("house_interior").furniture) end)
-				if afterOk and afterCount - beforeCount >= #furniturest then confirmed = true break end
+				if afterOk and afterCount - beforeCount >= #furniturest then
+					confirmed = true
+					break
+				end
 				task.wait(0.35)
 			end
 			if not confirmed then
-				Rayfield:Notify({ Title = "Error", Content = "Furniture paste was not fully confirmed", Duration = 5, Image = "circle-alert" })
+				Rayfield:Notify({
+					Title = "Error",
+					Content = "Furniture paste was not fully confirmed",
+					Duration = 5,
+					Image =
+					"circle-alert"
+				})
 				return false
 			end
 			applyRequestedOutfits(furniturest, safetyCheck)
@@ -3922,7 +4157,8 @@ local function loadMain()
 				if stopFlag or (safetyCheck and not safetyCheck()) then break end
 				if v.text then
 					pcall(function()
-						router.get("HousingAPI/ActivateFurniture"):InvokeServer(plr, i, "UseBlock", v.text, plr.Character)
+						router.get("HousingAPI/ActivateFurniture"):InvokeServer(plr, i, "UseBlock", v.text, plr
+							.Character)
 					end)
 				end
 			end
@@ -3964,9 +4200,16 @@ local function loadMain()
 
 		if stopFlag or (safetyCheck and not safetyCheck()) then return false end
 		if not texturesSuccessful then
-
-			Rayfield:Notify({ Title = "Warning", Content = "Paste completed. Unavailable/failed textures were skipped.", Duration = 5, Image = "circle-alert" })
-			updatestatus("Idle") updateprog("-") updateitem("-")
+			Rayfield:Notify({
+				Title = "Warning",
+				Content = "Paste completed. Unavailable/failed textures were skipped.",
+				Duration = 5,
+				Image =
+				"circle-alert"
+			})
+			updatestatus("Idle")
+			updateprog("-")
+			updateitem("-")
 			return true
 		end
 		Rayfield:Notify({ Title = "Success", Content = "House Placed successfully!", Duration = 3, Image = "circle-check" })
@@ -3994,8 +4237,12 @@ local function loadMain()
 			end
 			if type(v.cframe) == "table" then
 				local ok, cf = pcall(function() return CFrame.new(table.unpack(v.cframe)) end)
-				if ok and cf then v.cframe = cf
-				else warn("[SKIP] Could not convert cframe for:", v.id) continue end
+				if ok and cf then
+					v.cframe = cf
+				else
+					warn("[SKIP] Could not convert cframe for:", v.id)
+					continue
+				end
 			end
 			if typeof(v.cframe) == "CFrame" then
 				validFurniture[i] = v
@@ -4016,8 +4263,16 @@ local function loadMain()
 			if stopFlag or (safetyCheck and not safetyCheck()) then break end
 			local canbuy, exists = canbuyfurniture(v.id)
 			if not canbuy and exists == true then
-				updatestatus("Idle") updateprog("-") updateitem("-")
-				Rayfield:Notify({ Title = "Error", Content = "Insufficient funds for furniture: " .. v.id, Duration = 3, Image = "circle-alert" })
+				updatestatus("Idle")
+				updateprog("-")
+				updateitem("-")
+				Rayfield:Notify({
+					Title = "Error",
+					Content = "Insufficient funds for furniture: " .. v.id,
+					Duration = 3,
+					Image =
+					"circle-alert"
+				})
 				return false
 			elseif not canbuy and exists == false then
 				table.insert(unavailableFurniture, v.id)
@@ -4055,14 +4310,22 @@ local function loadMain()
 		notifyUnavailableFurniture(unavailableFurniture)
 
 		if stopFlag or (safetyCheck and not safetyCheck()) then
-			updatestatus("Stopped") updateprog("-") updateitem("-")
+			updatestatus("Stopped")
+			updateprog("-")
+			updateitem("-")
 			return false
 		end
 
 		if #furniturest > 0 then
 			local affordable, requiredCost, availableMoney = canAffordFurnitureRequests(furniturest)
 			if not affordable then
-				Rayfield:Notify({ Title = "Error", Content = "Not enough money for this paste. Need $" .. requiredCost .. ", have $" .. availableMoney, Duration = 5, Image = "circle-alert" })
+				Rayfield:Notify({
+					Title = "Error",
+					Content = "Not enough money for this paste. Need $" ..
+						requiredCost .. ", have $" .. availableMoney,
+					Duration = 5,
+					Image = "circle-alert"
+				})
 				return false
 			end
 			if not placeFurnitures(furniturest, false, safetyCheck) then return false end
@@ -4071,7 +4334,9 @@ local function loadMain()
 		end
 
 		if stopFlag or (safetyCheck and not safetyCheck()) then
-			updatestatus("Stopped") updateprog("-") updateitem("-")
+			updatestatus("Stopped")
+			updateprog("-")
+			updateitem("-")
 			return false
 		end
 
@@ -4081,7 +4346,8 @@ local function loadMain()
 				if stopFlag or (safetyCheck and not safetyCheck()) then break end
 				if v.text then
 					pcall(function()
-						router.get("HousingAPI/ActivateFurniture"):InvokeServer(plr, i, "UseBlock", v.text, plr.Character)
+						router.get("HousingAPI/ActivateFurniture"):InvokeServer(plr, i, "UseBlock", v.text, plr
+							.Character)
 					end)
 				end
 			end
@@ -4123,12 +4389,25 @@ local function loadMain()
 
 		if stopFlag or (safetyCheck and not safetyCheck()) then return false end
 		if not texturesSuccessful then
-
-			Rayfield:Notify({ Title = "Warning", Content = "Paste completed. Unavailable/failed textures were skipped.", Duration = 5, Image = "circle-alert" })
-			updatestatus("Idle") updateprog("-") updateitem("-")
+			Rayfield:Notify({
+				Title = "Warning",
+				Content = "Paste completed. Unavailable/failed textures were skipped.",
+				Duration = 5,
+				Image =
+				"circle-alert"
+			})
+			updatestatus("Idle")
+			updateprog("-")
+			updateitem("-")
 			return true
 		end
-		Rayfield:Notify({ Title = "Success", Content = "House Placed successfully! (Slow mode)", Duration = 3, Image = "circle-check" })
+		Rayfield:Notify({
+			Title = "Success",
+			Content = "House Placed successfully! (Slow mode)",
+			Duration = 3,
+			Image =
+			"circle-check"
+		})
 		updatestatus("Idle")
 		updateprog("-")
 		updateitem("-")
@@ -4137,14 +4416,20 @@ local function loadMain()
 
 	local function colorValueToTuple(value)
 		if typeof(value) == "Color3" then return value.R, value.G, value.B end
-		if type(value) == "table" then return value[1] or value.R or value.r, value[2] or value.G or value.g, value[3] or value.B or value.b end
+		if type(value) == "table" then
+			return value[1] or value.R or value.r, value[2] or value.G or value.g,
+				value[3] or value.B or value.b
+		end
 		return nil
 	end
 
 	local function colorsEqual(a, b)
 		a, b = a or {}, b or {}
 		local bByKey, countA, countB = {}, 0, 0
-		for k, v in pairs(b) do bByKey[tostring(k)] = v countB += 1 end
+		for k, v in pairs(b) do
+			bByKey[tostring(k)] = v
+			countB += 1
+		end
 		for k, av in pairs(a) do
 			countA += 1
 			local bv = bByKey[tostring(k)]
@@ -4166,11 +4451,23 @@ local function loadMain()
 	local function fixMissing()
 		stopFlag = false
 		if not savedhouse then
-			return Rayfield:Notify({ Title = "Error", Content = "No house has been saved", Duration = 3, Image = "circle-alert" })
+			return Rayfield:Notify({
+				Title = "Error",
+				Content = "No house has been saved",
+				Duration = 3,
+				Image =
+				"circle-alert"
+			})
 		end
 		local house_success, houseInterior = pcall(function() return cd.get("house_interior") end)
 		if not house_success or not houseInterior or houseInterior.player ~= plr then
-			return Rayfield:Notify({ Title = "Error", Content = "Please enter your house", Duration = 3, Image = "circle-alert" })
+			return Rayfield:Notify({
+				Title = "Error",
+				Content = "Please enter your house",
+				Duration = 3,
+				Image =
+				"circle-alert"
+			})
 		end
 		updatestatus("Checking Missing Items")
 		local currentFurn = houseInterior.furniture or {}
@@ -4205,32 +4502,77 @@ local function loadMain()
 				else
 					skipped += 1
 					if exists then
-						Rayfield:Notify({ Title = "Warning", Content = "Insufficient funds for: " .. savedItem.id, Duration = 3, Image = "circle-alert" })
+						Rayfield:Notify({
+							Title = "Warning",
+							Content = "Insufficient funds for: " .. savedItem.id,
+							Duration = 3,
+							Image =
+							"circle-alert"
+						})
 					else
-						Rayfield:Notify({ Title = "Warning", Content = savedItem.id .. " is off-sale or invalid", Duration = 3, Image = "circle-alert" })
+						Rayfield:Notify({
+							Title = "Warning",
+							Content = savedItem.id .. " is off-sale or invalid",
+							Duration = 3,
+							Image =
+							"circle-alert"
+						})
 					end
 				end
 			end
 		end
 		if #missing == 0 then
-			Rayfield:Notify({ Title = "Info", Content = "No missing items found (or all skipped). Skipped: " .. skipped, Duration = 5, Image = "info" })
-			updatestatus("Idle") updateprog("-") updateitem("-")
+			Rayfield:Notify({
+				Title = "Info",
+				Content = "No missing items found (or all skipped). Skipped: " .. skipped,
+				Duration = 5,
+				Image =
+				"info"
+			})
+			updatestatus("Idle")
+			updateprog("-")
+			updateitem("-")
 			return
 		end
 		local affordable, requiredCost, availableMoney = canAffordFurnitureRequests(missing)
 		if not affordable then
-			updatestatus("Idle") updateprog("-") updateitem("-")
-			return Rayfield:Notify({ Title = "Error", Content = "Not enough money to fix missing items. Need $" .. requiredCost .. ", have $" .. availableMoney, Duration = 5, Image = "circle-alert" })
+			updatestatus("Idle")
+			updateprog("-")
+			updateitem("-")
+			return Rayfield:Notify({
+				Title = "Error",
+				Content = "Not enough money to fix missing items. Need $" ..
+					requiredCost .. ", have $" .. availableMoney,
+				Duration = 5,
+				Image = "circle-alert"
+			})
 		end
-		Rayfield:Notify({ Title = "Fixing", Content = "Attempting to place " .. #missing .. " missing items...", Duration = 5, Image = "loader" })
+		Rayfield:Notify({
+			Title = "Fixing",
+			Content = "Attempting to place " .. #missing .. " missing items...",
+			Duration = 5,
+			Image =
+			"loader"
+		})
 		if not placeFurnitures(missing, true) then
-			updatestatus("Idle") updateprog("-") updateitem("-")
-			return Rayfield:Notify({ Title = "Warning", Content = "Some missing items were not confirmed; no batch was resent to avoid duplicates.", Duration = 6, Image = "circle-alert" })
+			updatestatus("Idle")
+			updateprog("-")
+			updateitem("-")
+			return Rayfield:Notify({
+				Title = "Warning",
+				Content =
+				"Some missing items were not confirmed; no batch was resent to avoid duplicates.",
+				Duration = 6,
+				Image =
+				"circle-alert"
+			})
 		end
 		task.wait(1)
 		applyRequestedOutfits(missing)
 		if stopFlag then
-			updatestatus("Stopped") updateprog("-") updateitem("-")
+			updatestatus("Stopped")
+			updateprog("-")
+			updateitem("-")
 			return false
 		end
 		local success, interior = pcall(function() return cd.get("house_interior") end)
@@ -4239,27 +4581,48 @@ local function loadMain()
 				if stopFlag then break end
 				if v.text then
 					pcall(function()
-						router.get("HousingAPI/ActivateFurniture"):InvokeServer(plr, i, "UseBlock", v.text, plr.Character)
+						router.get("HousingAPI/ActivateFurniture"):InvokeServer(plr, i, "UseBlock", v.text, plr
+							.Character)
 					end)
 				end
 			end
 		end
 		Rayfield:Notify({ Title = "Success", Content = "Fix attempt completed!", Duration = 3, Image = "circle-check" })
-		updatestatus("Idle") updateprog("-") updateitem("-")
+		updatestatus("Idle")
+		updateprog("-")
+		updateitem("-")
 	end
 
 	local manualPasteRunning = false
 	local function pastehouseinit(mode)
 		if manualPasteRunning then
-			return Rayfield:Notify({ Title = "Paste", Content = "A manual paste is already running", Duration = 3, Image = "circle-alert" })
+			return Rayfield:Notify({
+				Title = "Paste",
+				Content = "A manual paste is already running",
+				Duration = 3,
+				Image =
+				"circle-alert"
+			})
 		end
 		stopFlag = false
 		if not savedhouse then
-			return Rayfield:Notify({ Title = "Error", Content = "No house has been saved", Duration = 3, Image = "circle-alert" })
+			return Rayfield:Notify({
+				Title = "Error",
+				Content = "No house has been saved",
+				Duration = 3,
+				Image =
+				"circle-alert"
+			})
 		end
 		local success, houseInterior = pcall(function() return cd.get("house_interior") end)
 		if not success or not houseInterior or not houseInterior.player or houseInterior.player ~= plr then
-			return Rayfield:Notify({ Title = "Error", Content = "Please enter your house to paste the house", Duration = 3, Image = "circle-alert" })
+			return Rayfield:Notify({
+				Title = "Error",
+				Content = "Please enter your house to paste the house",
+				Duration = 3,
+				Image =
+				"circle-alert"
+			})
 		end
 
 		local resolvedSaved = getSavedHouseExactType(savedhouse)
@@ -4267,8 +4630,13 @@ local function loadMain()
 		if not IgnoreTypeCheck.CurrentValue and not isExactSameHouseType(resolvedSaved, resolvedCurrent) then
 			return Rayfield:Notify({
 				Title = "Error",
-				Content = "House types do not match!\nSaved: " .. tostring(getExactHouseDisplayName(resolvedSaved)) .. "\nCurrent: " .. tostring(getExactHouseDisplayName(resolvedCurrent)) .. "\n\nEnable 'Ignore House Type' to force paste.",
-				Duration = 6, Image = "circle-alert",
+				Content = "House types do not match!\nSaved: " ..
+					tostring(getExactHouseDisplayName(resolvedSaved)) ..
+					"\nCurrent: " ..
+					tostring(getExactHouseDisplayName(resolvedCurrent)) ..
+					"\n\nEnable 'Ignore House Type' to force paste.",
+				Duration = 6,
+				Image = "circle-alert",
 			})
 		end
 
@@ -4288,7 +4656,9 @@ local function loadMain()
 			end)
 			manualPasteRunning = false
 			if not ok then
-				updatestatus("Idle") updateprog("-") updateitem("-")
+				updatestatus("Idle")
+				updateprog("-")
+				updateitem("-")
 				Rayfield:Notify({ Title = "Paste Error", Content = tostring(result), Duration = 5, Image = "circle-alert" })
 			end
 		end)
@@ -4303,7 +4673,9 @@ local function loadMain()
 		Callback = function()
 			stopFlag = true
 			autoPasteRunning = false
-			updatestatus("Stopped") updateprog("-") updateitem("-")
+			updatestatus("Stopped")
+			updateprog("-")
+			updateitem("-")
 			Rayfield:Notify({ Title = "Stopped", Content = "All processes stopped", Duration = 3, Image = "circle-check" })
 		end,
 	})
@@ -4315,11 +4687,23 @@ local function loadMain()
 		Callback = function()
 			local success, house = pcall(function() return cd.get("house_interior") end)
 			if not success or not house then
-				return Rayfield:Notify({ Title = "Error", Content = "Failed to access house data", Duration = 3, Image = "circle-alert" })
+				return Rayfield:Notify({
+					Title = "Error",
+					Content = "Failed to access house data",
+					Duration = 3,
+					Image =
+					"circle-alert"
+				})
 			end
 			local listOk, listErr = pcall(function() return router.get("HousingAPI/ListHouse"):InvokeServer() end)
 			if not listOk then
-				return Rayfield:Notify({ Title = "Trade", Content = "List request failed: " .. tostring(listErr), Duration = 4, Image = "circle-alert" })
+				return Rayfield:Notify({
+					Title = "Trade",
+					Content = "List request failed: " .. tostring(listErr),
+					Duration = 4,
+					Image =
+					"circle-alert"
+				})
 			end
 			Rayfield:Notify({ Title = "Trade", Content = "List request sent.", Duration = 3, Image = "circle-check" })
 		end,
@@ -4330,11 +4714,23 @@ local function loadMain()
 		Callback = function()
 			local success, house = pcall(function() return cd.get("house_interior") end)
 			if not success or not house then
-				return Rayfield:Notify({ Title = "Error", Content = "Failed to access house data", Duration = 3, Image = "circle-alert" })
+				return Rayfield:Notify({
+					Title = "Error",
+					Content = "Failed to access house data",
+					Duration = 3,
+					Image =
+					"circle-alert"
+				})
 			end
 			local unlistOk, unlistErr = pcall(function() return router.get("HousingAPI/UnlistHouse"):InvokeServer() end)
 			if not unlistOk then
-				return Rayfield:Notify({ Title = "Trade", Content = "Unlist request failed: " .. tostring(unlistErr), Duration = 4, Image = "circle-alert" })
+				return Rayfield:Notify({
+					Title = "Trade",
+					Content = "Unlist request failed: " .. tostring(unlistErr),
+					Duration = 4,
+					Image =
+					"circle-alert"
+				})
 			end
 			Rayfield:Notify({ Title = "Trade", Content = "Unlist request sent.", Duration = 3, Image = "circle-check" })
 		end,
@@ -4382,44 +4778,44 @@ local function loadMain()
 	PlayerDropdown = Tab:CreateDropdown({
 		Name = "Select Player",
 		Options = getPlayers(),
-		CurrentOption = selectedPlayer or "None",
+		CurrentOption = "None",
 		MultipleOptions = false,
 		Flag = "AutoAcceptPlayer",
 		Callback = function(option)
 			if autoPasteApplyingSavedTargets then return end
 			local value = (typeof(option) == "table") and option[1] or option
-			if value == "None" or value == "No Players Online" or value == nil then
-				value = nil
+			if value == "None" or value == "No Players Online" then
+				selectedPlayer = nil
 			else
-				value = tostring(value)
-			end
-			selectedPlayer = value
-			if autoAcceptPlayerInput then
-				pcall(function() autoAcceptPlayerInput:Set(selectedPlayer or "") end)
+				selectedPlayer = value
 			end
 			autoSaveAutoPasteConfig()
 		end,
 	})
 
-	autoAcceptPlayerInput = Tab:CreateInput({
+	local function refreshPlayers()
+		local players = getPlayers()
+		autoPasteApplyingSavedTargets = true
+		pcall(function()
+			PlayerDropdown:Refresh(players)
+			PlayerDropdown:Set(selectedPlayer or "None")
+		end)
+		autoPasteApplyingSavedTargets = false
+	end
+
+	Tab:CreateInput({
 		Name = "Type Player Name",
-		CurrentValue = selectedPlayer or "",
 		PlaceholderText = "Enter username...",
 		RemoveTextAfterFocusLost = false,
 		Callback = function(text)
-			if autoPasteApplyingSavedTargets then return end
-			local value = tostring(text or ""):gsub("^%s+", ""):gsub("%s+$", "")
-			if value == "" then value = nil end
-			if value == selectedPlayer then
-				return
-			end
-			selectedPlayer = value
-			if not value and PlayerDropdown then
-				pcall(function() PlayerDropdown:Set("None") end)
-			end
-			autoSaveAutoPasteConfig()
-			if value then
-				Rayfield:Notify({ Title = "Player Set", Content = "Now accepting: " .. value, Duration = 3 })
+			if text ~= "" then
+				selectedPlayer = text
+				autoSaveAutoPasteConfig()
+				Rayfield:Notify({ Title = "Player Set", Content = "Now accepting: " .. text, Duration = 3 })
+			else
+				selectedPlayer = nil
+				PlayerDropdown:Set("None")
+				autoSaveAutoPasteConfig()
 			end
 		end,
 	})
@@ -4439,7 +4835,6 @@ local function loadMain()
 	end
 
 	local function runTradeAcceptSequence(playerName, acceptedAt)
-
 		task.spawn(function()
 			local player = resolvePlayer(playerName)
 			if not player then
@@ -4503,7 +4898,6 @@ local function loadMain()
 						break
 					end
 				else
-
 					player = candidate
 					break
 				end
@@ -4541,14 +4935,9 @@ local function loadMain()
 
 	autoAcceptToggle = Tab:CreateToggle({
 		Name = "Auto Accept Player",
-		CurrentValue = autoTradeEnabled,
-		Flag = "AutoAcceptEnabled",
+		CurrentValue = false,
 		Callback = function(val)
-			val = val == true
 			if autoPasteApplyingSavedTargets then return end
-			if val == autoTradeEnabled then
-				return
-			end
 			autoTradeEnabled = val
 			if not val then
 				activeAcceptedTradePlayer = nil
@@ -4563,33 +4952,9 @@ local function loadMain()
 		end,
 	})
 
-	local function refreshAutoAcceptPlayerDropdown(joinedPlayer)
-		if not PlayerDropdown then return end
-		local options = getPlayers and getPlayers() or { "None" }
-		pcall(function()
-			PlayerDropdown:Refresh(options, true)
-		end)
-
-		-- If a username was typed before the player joined, select that exact
-		-- player in the dropdown without replacing the saved username.
-		if joinedPlayer and selectedPlayer and selectedPlayer ~= "" then
-			if string.lower(joinedPlayer.Name) == string.lower(selectedPlayer) then
-				task.wait(0.15)
-				pcall(function() PlayerDropdown:Set(joinedPlayer.Name) end)
-				if autoTradeEnabled then
-					Rayfield:Notify({
-						Title = "Auto Accept",
-						Content = joinedPlayer.Name .. " joined and is now selected.",
-						Duration = 3,
-					})
-				end
-			end
-		end
-	end
-
 	Players.PlayerAdded:Connect(function(player)
 		task.wait(0.3)
-		refreshAutoAcceptPlayerDropdown(player)
+		refreshPlayers()
 		if autoTradeEnabled and not selectedPlayer and player ~= Players.LocalPlayer then
 			Rayfield:Notify({
 				Title = "Auto Trade",
@@ -4598,10 +4963,9 @@ local function loadMain()
 			})
 		end
 	end)
-
 	Players.PlayerRemoving:Connect(function()
-		task.wait(0.2)
-		refreshAutoAcceptPlayerDropdown(nil)
+		task.wait(0.3)
+		refreshPlayers()
 	end)
 
 	local PastebinTab = Window:CreateTab("Pastebin", "clipboard")
@@ -4609,8 +4973,8 @@ local function loadMain()
 	local userPastebinUsername = ""
 	local userPastebinPassword = ""
 
-	task.wait(0.3)
-	PastebinTab:CreateLabel("TO GET DEV API KEY YOU NEED TO MAKE ACCOUNT ON PASTEBIN AFTER THAT GO TO https://pastebin.com/doc_api AND COPY YOUR DEV API KEY",
+	PastebinTab:CreateLabel(
+		"TO GET DEV API KEY YOU NEED TO MAKE ACCOUNT ON PASTEBIN AFTER THAT GO TO https://pastebin.com/doc_api AND COPY YOUR DEV API KEY",
 		"info"
 	)
 	PastebinTab:CreateDivider()
@@ -4620,7 +4984,8 @@ local function loadMain()
 		PlaceholderText = "Paste ONLY the API key (not a link)",
 		RemoveTextAfterFocusLost = false,
 		Callback = function(value)
-			value = tostring(value):gsub("%s+", ""):gsub("YouruniquedeveloperAPIkey:", ""):gsub("Your%w+developer%w+API%w+key:", "")
+			value = tostring(value):gsub("%s+", ""):gsub("YouruniquedeveloperAPIkey:", ""):gsub(
+				"Your%w+developer%w+API%w+key:", "")
 			userPastebinDevKey = value
 		end,
 	})
@@ -4651,7 +5016,12 @@ local function loadMain()
 		end
 		savedhouse = houseData
 		local furniturecost = 0
-		for _, v in pairs(savedhouse.furniture or {}) do if furnituresdb[v.id] then furniturecost += furnituresdb[v.id].cost or 0 end end
+		for _, v in pairs(savedhouse.furniture or {}) do
+			if furnituresdb[v.id] then
+				furniturecost += furnituresdb[v.id]
+					.cost or 0
+			end
+		end
 		local texturecost = 0
 		for _, v in pairs(savedhouse.textures or {}) do
 			if texturesdb.walls[v.walls] then texturecost += texturesdb.walls[v.walls].cost or 0 end
@@ -4679,15 +5049,27 @@ local function loadMain()
 				return Rayfield:Notify({ Title = "Error", Content = "No house has been scanned or loaded", Duration = 3 })
 			end
 			if #userPastebinDevKey < 20 or not userPastebinDevKey:match("^[%w]+$") then
-				return Rayfield:Notify({ Title = "Invalid API Key", Content = "Paste ONLY the Pastebin Dev API key.\nDo not paste a URL.", Duration = 5 })
+				return Rayfield:Notify({
+					Title = "Invalid API Key",
+					Content =
+					"Paste ONLY the Pastebin Dev API key.\nDo not paste a URL.",
+					Duration = 5
+				})
 			end
 			local clean_house = deepCopy(savedhouse)
 			local furniturecost = 0
 			for _, v in pairs(clean_house.furniture or {}) do
 				if furnituresdb[v.id] then furniturecost += furnituresdb[v.id].cost or 0 end
-				v.hash = nil v.was_free = nil v.no_value = nil v.was_default = nil
-				v.item_category = nil v.item_kind = nil v.occupied = v.occupied or nil
-				v.door_position = nil v.last_position = nil v.on = nil
+				v.hash = nil
+				v.was_free = nil
+				v.no_value = nil
+				v.was_default = nil
+				v.item_category = nil
+				v.item_kind = nil
+				v.occupied = v.occupied or nil
+				v.door_position = nil
+				v.last_position = nil
+				v.on = nil
 			end
 			local texturecost = 0
 			for _, v in pairs(clean_house.textures or {}) do
@@ -4697,9 +5079,15 @@ local function loadMain()
 			clean_house.total_cost = furniturecost + texturecost
 			clean_house.furniture_quantity = countfurnitures(clean_house.furniture)
 			clean_house.saved_by = "Cubix-HouseCloner"
-			clean_house.properties = nil clean_house.house_id = nil clean_house.listed_for_trade = nil
-			clean_house.unique = nil clean_house.active_addons = nil clean_house.allows_coop_building = nil
-			clean_house.house_pos = nil clean_house.textures_hash = nil clean_house.player = nil
+			clean_house.properties = nil
+			clean_house.house_id = nil
+			clean_house.listed_for_trade = nil
+			clean_house.unique = nil
+			clean_house.active_addons = nil
+			clean_house.allows_coop_building = nil
+			clean_house.house_pos = nil
+			clean_house.textures_hash = nil
+			clean_house.player = nil
 			local serializableHouse = serializeAutoPasteValue(clean_house)
 			local ok, encoded = pcall(function() return HttpService:JSONEncode(serializableHouse) end)
 			if not ok then return Rayfield:Notify({ Title = "Error", Content = "Failed to encode house data", Duration = 3 }) end
@@ -4719,551 +5107,626 @@ local function loadMain()
 	})
 
 	local function initializeFileManagementTabs()
-	local CreateFileTab = Window:CreateTab("Create File", "folder")
+		local CreateFileTab = Window:CreateTab("Create File", "folder")
 
-	if not isfolder(houseFilesPath) then makefolder(houseFilesPath) end
+		if not isfolder(houseFilesPath) then makefolder(houseFilesPath) end
 
-	CreateFileTab:CreateSection("Saved Houses")
+		CreateFileTab:CreateSection("Saved Houses")
 
-	local fileDropdown = CreateFileTab:CreateDropdown({
-		Name = "Select Saved House",
-		Options = {},
-		CurrentOption = nil,
-		MultipleOptions = false,
-		Flag = "FileDropdown",
-		Callback = function(_) end,
-	})
+		local fileDropdown = CreateFileTab:CreateDropdown({
+			Name = "Select Saved House",
+			Options = {},
+			CurrentOption = nil,
+			MultipleOptions = false,
+			Flag = "FileDropdown",
+			Callback = function(_) end,
+		})
 
-	local saveInput = CreateFileTab:CreateInput({
-		Name = "Save As",
-		PlaceholderText = "Enter File Name",
-		RemoveTextAfterFocusLost = false,
-		Callback = function(_) end,
-	})
+		local saveInput = CreateFileTab:CreateInput({
+			Name = "Save As",
+			PlaceholderText = "Enter File Name",
+			RemoveTextAfterFocusLost = false,
+			Callback = function(_) end,
+		})
 
-	local pendingDelete = nil
-	local fileSearchQuery = ""
-	local allFilesCache = {}
+		local pendingDelete = nil
+		local fileSearchQuery = ""
+		local allFilesCache = {}
 
-	local function getBaseFileName(path)
-		return tostring(path or ""):match("([^/\\]+)$") or tostring(path or "")
-	end
-
-	local function sanitizeFileName(name)
-		name = tostring(name or ""):gsub("^%s+", ""):gsub("%s+$", "")
-		name = name:gsub("%.json$", ""):gsub("%.txt$", ""):gsub("%.lua$", "")
-		name = name:gsub("%.%.", "_"):gsub("[/\\:*?\"<>|]", "_")
-		name = name:gsub("[%c]", "_"):sub(1, 100)
-		if name == "" then return nil end
-		return name
-	end
-
-	local function naturalSort(a, b)
-		local function pad(n) return ("%010d"):format(tonumber(n) or 0) end
-		local na = a:lower():gsub("%d+", pad)
-		local nb = b:lower():gsub("%d+", pad)
-		return na < nb
-	end
-
-	local function refreshFileDropdown()
-		local folderOk, folderExists = pcall(isfolder, houseFilesPath)
-		if not folderOk or not folderExists then
-			pcall(makefolder, houseFilesPath)
+		local function getBaseFileName(path)
+			return tostring(path or ""):match("([^/\\]+)$") or tostring(path or "")
 		end
 
-		local listed, files = pcall(listfiles, houseFilesPath)
-		if not listed or type(files) ~= "table" then
-			files = {}
+		local function sanitizeFileName(name)
+			name = tostring(name or ""):gsub("^%s+", ""):gsub("%s+$", "")
+			name = name:gsub("%.json$", ""):gsub("%.txt$", ""):gsub("%.lua$", "")
+			name = name:gsub("%.%.", "_"):gsub("[/\\:*?\"<>|]", "_")
+			name = name:gsub("[%c]", "_"):sub(1, 100)
+			if name == "" then return nil end
+			return name
 		end
-		local validFiles = {}
-		for _, filePath in ipairs(files) do
-			local fileName = tostring(filePath):match("([^/\\]+)$") or tostring(filePath)
-			if fileName:sub(-5) == ".json" or fileName:sub(-4) == ".txt" or fileName:sub(-4) == ".lua" then
-				table.insert(validFiles, fileName)
+
+		local function naturalSort(a, b)
+			local function pad(n) return ("%010d"):format(tonumber(n) or 0) end
+			local na = a:lower():gsub("%d+", pad)
+			local nb = b:lower():gsub("%d+", pad)
+			return na < nb
+		end
+
+		local function refreshFileDropdown()
+			local folderOk, folderExists = pcall(isfolder, houseFilesPath)
+			if not folderOk or not folderExists then
+				pcall(makefolder, houseFilesPath)
 			end
-		end
-		table.sort(validFiles, naturalSort)
-		allFilesCache = validFiles
-		local filtered = {}
-		for _, name in ipairs(allFilesCache) do
-			if fileSearchQuery == "" or string.find(string.lower(name), string.lower(fileSearchQuery), 1, true) then
-				table.insert(filtered, name)
+
+			local listed, files = pcall(listfiles, houseFilesPath)
+			if not listed or type(files) ~= "table" then
+				files = {}
 			end
-		end
-		if not fileDropdown then
+			local validFiles = {}
+			for _, filePath in ipairs(files) do
+				local fileName = tostring(filePath):match("([^/\\]+)$") or tostring(filePath)
+				if fileName:sub(-5) == ".json" or fileName:sub(-4) == ".txt" or fileName:sub(-4) == ".lua" then
+					table.insert(validFiles, fileName)
+				end
+			end
+			table.sort(validFiles, naturalSort)
+			allFilesCache = validFiles
+			local filtered = {}
+			for _, name in ipairs(allFilesCache) do
+				if fileSearchQuery == "" or string.find(string.lower(name), string.lower(fileSearchQuery), 1, true) then
+					table.insert(filtered, name)
+				end
+			end
+			if not fileDropdown then
+				refreshFQFileList()
+				return
+			end
+
+			local currentlySelected = fileDropdown.CurrentOption
+			if type(currentlySelected) == "table" then currentlySelected = currentlySelected[1] end
+			pcall(function() fileDropdown:Refresh(filtered) end)
+			if currentlySelected and table.find(filtered, currentlySelected) then
+				pcall(function() fileDropdown:Set(currentlySelected) end)
+			elseif #filtered > 0 then
+				pcall(function() fileDropdown:Set(filtered[1]) end)
+			else
+				pcall(function() fileDropdown:Refresh(filtered, true) end)
+			end
 			refreshFQFileList()
-			return
 		end
 
-		local currentlySelected = fileDropdown.CurrentOption
-		if type(currentlySelected) == "table" then currentlySelected = currentlySelected[1] end
-		pcall(function() fileDropdown:Refresh(filtered) end)
-		if currentlySelected and table.find(filtered, currentlySelected) then
-			pcall(function() fileDropdown:Set(currentlySelected) end)
-		elseif #filtered > 0 then
-			pcall(function() fileDropdown:Set(filtered[1]) end)
-		else
+		refreshFileDropdown()
 
-			pcall(function() fileDropdown:Refresh(filtered, true) end)
-		end
-		refreshFQFileList()
-	end
-
-	refreshFileDropdown()
-
-	CreateFileTab:CreateInput({
-		Name = "Search Files",
-		PlaceholderText = "Type to search house files...",
-		RemoveTextAfterFocusLost = false,
-		Callback = function(value)
-			fileSearchQuery = tostring(value or "")
-			refreshFileDropdown()
-		end,
-	})
-
-	CreateFileTab:CreateButton({
-		Name = "Save House to File",
-		Callback = function()
-			if not savedhouse then
-				return Rayfield:Notify({ Title = "Error", Content = "No house has been scanned or loaded", Duration = 3, Image = "circle-alert" })
-			end
-			local filename = sanitizeFileName(saveInput.CurrentValue)
-			if not filename then
-				return Rayfield:Notify({ Title = "Error", Content = "Please enter a valid filename", Duration = 3, Image = "circle-alert" })
-			end
-			local clean_house = deepCopy(savedhouse)
-			local furniturecost = 0
-			for _, v in pairs(clean_house.furniture or {}) do
-				if furnituresdb[v.id] then furniturecost += furnituresdb[v.id].cost or 0 end
-				v.hash = nil v.was_free = nil v.no_value = nil v.was_default = nil
-				v.item_category = nil v.item_kind = nil v.occupied = v.occupied or nil
-				v.door_position = nil v.last_position = nil v.on = nil
-			end
-			local texturecost = 0
-			for _, v in pairs(clean_house.textures or {}) do
-				if texturesdb.walls[v.walls] then texturecost += texturesdb.walls[v.walls].cost or 0 end
-				if texturesdb.floors[v.floors] then texturecost += texturesdb.floors[v.floors].cost or 0 end
-			end
-			clean_house.total_cost = furniturecost + texturecost
-			clean_house.furniture_quantity = countfurnitures(clean_house.furniture)
-			clean_house.saved_by = "Cubix-HouseCloner"
-			clean_house.properties = nil clean_house.house_id = nil clean_house.listed_for_trade = nil
-			clean_house.unique = nil clean_house.active_addons = nil clean_house.allows_coop_building = nil
-			clean_house.house_pos = nil clean_house.textures_hash = nil clean_house.player = nil
-			local serializableHouse = serializeAutoPasteValue(clean_house)
-			local success, encoded = pcall(function() return HttpService:JSONEncode(serializableHouse) end)
-			if not success then
-				return Rayfield:Notify({ Title = "Error", Content = "Failed to encode house data", Duration = 3, Image = "circle-alert" })
-			end
-			local wrote, writeErr = pcall(function() writefile(houseFilesPath .. "/" .. filename .. ".json", encoded) end)
-			if not wrote then
-				return Rayfield:Notify({ Title = "Error", Content = "Failed to save file: " .. tostring(writeErr), Duration = 4, Image = "circle-alert" })
-			end
-			refreshFileDropdown()
-			Rayfield:Notify({ Title = "Success", Content = "House saved: " .. filename .. ".json", Duration = 3, Image = "circle-check" })
-		end,
-	})
-
-	CreateFileTab:CreateButton({
-		Name = "Load House from File",
-		Callback = function()
-			local selected = fileDropdown.CurrentOption
-			if type(selected) == "table" then selected = selected[1] end
-			if not selected or selected == "" then
-				return Rayfield:Notify({ Title = "Error", Content = "No file selected to load", Duration = 3 })
-			end
-			local houseData, err = loadHouseDataFromFile(selected)
-			if not houseData then
-				return Rayfield:Notify({ Title = "Error", Content = "Failed to load " .. selected .. ": " .. tostring(err), Duration = 3 })
-			end
-			savedhouse = houseData
-			local furniturecost = 0
-			for _, v in pairs(savedhouse.furniture or {}) do
-				if furnituresdb[v.id] then furniturecost += furnituresdb[v.id].cost or 0 end
-			end
-			local texturecost = 0
-			for _, v in pairs(savedhouse.textures or {}) do
-				if texturesdb.walls[v.walls] then texturecost += texturesdb.walls[v.walls].cost or 0 end
-				if texturesdb.floors[v.floors] then texturecost += texturesdb.floors[v.floors].cost or 0 end
-			end
-			local t_count = counttextures(savedhouse.textures)
-			local amb = savedhouse.ambiance and "Yes" or "No"
-			local typ = savedhouse.building_type or "-"
-			task.spawn(setscaninfo, countfurnitures(savedhouse.furniture), furniturecost, t_count, texturecost, amb, typ)
-			Rayfield:Notify({ Title = "Success", Content = "House loaded from file: " .. selected, Duration = 3 })
-			refreshFileDropdown()
-		end,
-	})
-
-	CreateFileTab:CreateButton({
-		Name = "Delete Selected House",
-		Callback = function()
-			local selected = fileDropdown.CurrentOption
-			if type(selected) == "table" then selected = selected[1] end
-			if not selected or selected == "" then
-				return Rayfield:Notify({ Title = "Error", Content = "No house selected to delete.", Duration = 3 })
-			end
-			if pendingDelete == selected then
-				selected = getBaseFileName(selected)
-				local filePath = houseFilesPath .. "/" .. selected
-				local existsOk, exists = pcall(isfile, filePath)
-				if existsOk and exists then
-					local deleteOk, deleteErr = pcall(delfile, filePath)
-					if not deleteOk then
-						return Rayfield:Notify({ Title = "Error", Content = "Delete failed: " .. tostring(deleteErr), Duration = 4 })
-					end
-					Rayfield:Notify({ Title = "Deleted", Content = selected .. " has been deleted.", Duration = 3, Image = "circle-check" })
-					pendingDelete = nil
-					refreshFileDropdown()
-				else
-					Rayfield:Notify({ Title = "Error", Content = "File not found: " .. selected, Duration = 3 })
-				end
-			else
-				pendingDelete = selected
-				Rayfield:Notify({
-					Title = "Confirm Delete",
-					Content = "Are you sure you want to delete **" .. selected .. "**?\n\nClick the Delete button again to confirm.",
-					Duration = 10,
-					Image = "circle-alert",
-				})
-			end
-		end,
-	})
-
-	CreateFileTab:CreateButton({
-		Name = "Refresh List",
-		Callback = function()
-			refreshFileDropdown()
-			Rayfield:Notify({ Title = "Refreshed", Content = "File list updated and sorted", Duration = 2 })
-		end,
-	})
-
-	do
-		local ConverterTab = Window:CreateTab("Converter", "repeat")
-		local convertPath = houseFSPath .. "/Convert"
-		local sourceCloner = "Rage"
-		local selectedFile = nil
-		local outputName = ""
-		local busy = false
-		local sourceDropdown
-		task.wait(0.3)
-		local status = ConverterTab:CreateLabel("Put source JSON files in HouseFS/Convert, then refresh the list.", "info")
-
-		local function ensureFolders()
-			for _, path in ipairs({houseFSPath, convertPath, houseFilesPath}) do
-				if not isfolder(path) then makefolder(path) end
-			end
-		end
-
-		local function refreshSources()
-			local ok, err = pcall(function()
-				ensureFolders()
-				local options = {}
-				for _, path in ipairs(listfiles(convertPath)) do
-					local name = getBaseFileName(path)
-					if name:lower():sub(-5) == ".json" and isfile(convertPath .. "/" .. name) then
-						table.insert(options, name)
-					end
-				end
-				table.sort(options, naturalSort)
-				if not table.find(options, selectedFile) then selectedFile = options[1] end
-				sourceDropdown:Refresh(options, true)
-				if selectedFile then
-					sourceDropdown:Set({selectedFile})
-				end
-				status:Set("Source files: " .. #options .. " | Folder: HouseFS/Convert")
-			end)
-			if not ok then status:Set("Cannot read Convert folder: " .. tostring(err)) end
-		end
-
-		local function convertSource(data, cloner)
-			local function requireValue(condition, message)
-				if not condition then error(message, 0) end
-			end
-			local function finite(value)
-				return type(value) == "number" and value == value and math.abs(value) < math.huge
-			end
-			local function array(value, length)
-				if type(value) ~= "table" or #value ~= length then return false end
-				local count = 0
-				for key in pairs(value) do
-					if type(key) ~= "number" or key % 1 ~= 0 or key < 1 or key > length then return false end
-					count = count + 1
-				end
-				return count == length
-			end
-			requireValue(type(data) == "table", "JSON must contain a house object.")
-			local items = cloner == "Rage" and data.furniture or data.furnitures
-			local houseType = cloner == "Rage" and data.building_type or data.buildingType
-
-			if cloner == "Rage" then items = data.furniture; houseType = data.building_type end
-			requireValue(type(items) == "table", "This file does not match " .. cloner .. ". Check the Source Cloner selection.")
-			requireValue(type(houseType) == "string" and houseType:match("%S"), "Missing house type.")
-			if cloner == "TBI" then requireValue(array(items, #items), "TBI furniture must be a list.") end
-			local result = {furniture = {}, textures = {}, building_type = resolveExactHouseType(houseType), ambiance = data.ambiance}
-			local count, cost = 0, 0
-			for key, item in pairs(items) do
-				requireValue(type(item) == "table" and type(item.id) == "string" and item.id ~= "", "Invalid furniture ID at " .. tostring(key))
-				requireValue(array(item.cframe, 12), "Invalid CFrame for " .. item.id)
-				for _, value in ipairs(item.cframe) do requireValue(finite(value), "Invalid CFrame number for " .. item.id) end
-				requireValue(item.scale == nil or (finite(item.scale) and item.scale > 0), "Invalid scale for " .. item.id)
-				requireValue(item.colors == nil or type(item.colors) == "table", "Invalid colors for " .. item.id)
-				local converted = deepCopy(item)
-				converted.colors = {}
-				for channel, color in pairs(item.colors or {}) do
-					local index = tonumber(channel)
-					requireValue(index and index >= 1 and index % 1 == 0, "Invalid color index for " .. item.id)
-					requireValue(array(color, 3), "Invalid RGB color for " .. item.id)
-					for _, value in ipairs(color) do requireValue(finite(value) and value >= 0 and value <= 1, "RGB color outside 0-1 for " .. item.id) end
-					requireValue(converted.colors[index] == nil, "Duplicate color index for " .. item.id)
-					converted.colors[index] = color
-				end
-
-				result.furniture[tostring(key)] = converted
-				count = count + 1
-				local db = furnituresdb[item.id]
-				cost = cost + (db and db.cost or 0)
-			end
-			requireValue(data.textures == nil or type(data.textures) == "table", "Invalid textures.")
-			if cloner == "TBI" then
-				local textures = data.textures or {}
-				requireValue(array(textures, #textures), "TBI textures must be a list.")
-				for _, entry in ipairs(textures) do
-					requireValue(type(entry) == "table" and type(entry.room) == "string" and type(entry.id) == "string", "Invalid TBI texture entry.")
-					requireValue(entry.type == "walls" or entry.type == "floors", "Unknown texture type.")
-					result.textures[entry.room] = result.textures[entry.room] or {}
-					requireValue(result.textures[entry.room][entry.type] == nil, "Duplicate texture for " .. entry.room)
-					result.textures[entry.room][entry.type] = entry.id
-				end
-			else
-				result.textures = deepCopy(data.textures or {})
-			end
-			for room, surfaces in pairs(result.textures) do
-				requireValue(type(room) == "string" and type(surfaces) == "table", "Invalid room textures.")
-				for surface, id in pairs(surfaces) do
-					requireValue((surface == "walls" or surface == "floors") and type(id) == "string", "Invalid texture in " .. room)
-					local db = texturesdb[surface] and texturesdb[surface][id]
-					cost = cost + (db and db.cost or 0)
-				end
-			end
-			requireValue(result.ambiance == nil or type(result.ambiance) == "table", "Invalid ambiance.")
-			result.furniture_quantity = count
-			result.total_cost = cost
-			result.saved_by = "Cubix-HouseCloner"
-
-			return serializeAutoPasteValue(deserializeFileValue(result)), count
-		end
-
-		ConverterTab:CreateDropdown({
-			Name = "Source Cloner", Options = {"Rage", "TBI"}, CurrentOption = {"Rage"}, MultipleOptions = false,
-			Flag = "ConverterSourceCloner",
+		CreateFileTab:CreateInput({
+			Name = "Search Files",
+			PlaceholderText = "Type to search house files...",
+			RemoveTextAfterFocusLost = false,
 			Callback = function(value)
-				local choice = type(value) == "table" and value[1] or value
-				if choice == "Rage" or choice == "TBI" then sourceCloner = choice end
+				fileSearchQuery = tostring(value or "")
+				refreshFileDropdown()
 			end,
 		})
-		sourceDropdown = ConverterTab:CreateDropdown({
-			Name = "File to Convert", Options = {}, CurrentOption = {}, MultipleOptions = false,
-			Flag = "ConverterFile",
-			Callback = function(value) selectedFile = type(value) == "table" and value[1] or value end,
-		})
-		ConverterTab:CreateInput({
-			Name = "Save As (optional)", PlaceholderText = "Defaults to source filename", RemoveTextAfterFocusLost = false,
-			Callback = function(value) outputName = tostring(value or "") end,
-		})
-		ConverterTab:CreateButton({Name = "Refresh Convert Files", Callback = refreshSources})
-		ConverterTab:CreateButton({Name = "Convert & Save", Callback = function()
-			if busy then return end
-			if not selectedFile or selectedFile == "" then
-				return Rayfield:Notify({Title = "Converter", Content = "Put a JSON file in HouseFS/Convert, refresh, and select it.", Duration = 5})
-			end
-			busy = true
-			local ok, filename, count = pcall(function()
-				ensureFolders()
-				local sourceName = getBaseFileName(selectedFile)
-				local raw = readfile(convertPath .. "/" .. sourceName)
-				local decoded = HttpService:JSONDecode(raw)
-				local converted, itemCount = convertSource(decoded, sourceCloner)
-				local encoded = HttpService:JSONEncode(converted)
-				local base = sanitizeFileName(outputName:match("%S") and outputName or sourceName)
-				if not base then error("Enter a valid output filename.", 0) end
-				local name, suffix = base .. ".json", 2
-				while isfile(houseFilesPath .. "/" .. name) do
-					name = base .. " (" .. suffix .. ").json"
-					suffix = suffix + 1
-				end
-				local path = houseFilesPath .. "/" .. name
-				writefile(path, encoded)
-				if readfile(path) ~= encoded then error("Saved file verification failed: " .. name, 0) end
-				return name, itemCount
-			end)
-			busy = false
-			if not ok then
-				status:Set("Conversion failed: " .. tostring(filename))
-				return Rayfield:Notify({Title = "Conversion Failed", Content = tostring(filename), Duration = 7})
-			end
-			local refreshed = pcall(refreshFileDropdown)
-			status:Set("Saved " .. filename .. " | " .. count .. " furniture items")
-			Rayfield:Notify({Title = "Converted & Saved", Content = "HouseFS/Houses/" .. filename .. (refreshed and "\nAvailable in Saved Houses and Auto Paste." or "\nUse Refresh List to update Saved Houses."), Duration = 6})
-		end})
-		refreshSources()
-	end
 
-	end 
+		CreateFileTab:CreateButton({
+			Name = "Save House to File",
+			Callback = function()
+				if not savedhouse then
+					return Rayfield:Notify({
+						Title = "Error",
+						Content = "No house has been scanned or loaded",
+						Duration = 3,
+						Image =
+						"circle-alert"
+					})
+				end
+				local filename = sanitizeFileName(saveInput.CurrentValue)
+				if not filename then
+					return Rayfield:Notify({
+						Title = "Error",
+						Content = "Please enter a valid filename",
+						Duration = 3,
+						Image =
+						"circle-alert"
+					})
+				end
+				local clean_house = deepCopy(savedhouse)
+				local furniturecost = 0
+				for _, v in pairs(clean_house.furniture or {}) do
+					if furnituresdb[v.id] then furniturecost += furnituresdb[v.id].cost or 0 end
+					v.hash = nil
+					v.was_free = nil
+					v.no_value = nil
+					v.was_default = nil
+					v.item_category = nil
+					v.item_kind = nil
+					v.occupied = v.occupied or nil
+					v.door_position = nil
+					v.last_position = nil
+					v.on = nil
+				end
+				local texturecost = 0
+				for _, v in pairs(clean_house.textures or {}) do
+					if texturesdb.walls[v.walls] then texturecost += texturesdb.walls[v.walls].cost or 0 end
+					if texturesdb.floors[v.floors] then texturecost += texturesdb.floors[v.floors].cost or 0 end
+				end
+				clean_house.total_cost = furniturecost + texturecost
+				clean_house.furniture_quantity = countfurnitures(clean_house.furniture)
+				clean_house.saved_by = "Cubix-HouseCloner"
+				clean_house.properties = nil
+				clean_house.house_id = nil
+				clean_house.listed_for_trade = nil
+				clean_house.unique = nil
+				clean_house.active_addons = nil
+				clean_house.allows_coop_building = nil
+				clean_house.house_pos = nil
+				clean_house.textures_hash = nil
+				clean_house.player = nil
+				local serializableHouse = serializeAutoPasteValue(clean_house)
+				local success, encoded = pcall(function() return HttpService:JSONEncode(serializableHouse) end)
+				if not success then
+					return Rayfield:Notify({
+						Title = "Error",
+						Content = "Failed to encode house data",
+						Duration = 3,
+						Image =
+						"circle-alert"
+					})
+				end
+				local wrote, writeErr = pcall(function() writefile(houseFilesPath .. "/" .. filename .. ".json", encoded) end)
+				if not wrote then
+					return Rayfield:Notify({
+						Title = "Error",
+						Content = "Failed to save file: " .. tostring(writeErr),
+						Duration = 4,
+						Image =
+						"circle-alert"
+					})
+				end
+				refreshFileDropdown()
+				Rayfield:Notify({
+					Title = "Success",
+					Content = "House saved: " .. filename .. ".json",
+					Duration = 3,
+					Image =
+					"circle-check"
+				})
+			end,
+		})
+
+		CreateFileTab:CreateButton({
+			Name = "Load House from File",
+			Callback = function()
+				local selected = fileDropdown.CurrentOption
+				if type(selected) == "table" then selected = selected[1] end
+				if not selected or selected == "" then
+					return Rayfield:Notify({ Title = "Error", Content = "No file selected to load", Duration = 3 })
+				end
+				local houseData, err = loadHouseDataFromFile(selected)
+				if not houseData then
+					return Rayfield:Notify({
+						Title = "Error",
+						Content = "Failed to load " ..
+							selected .. ": " .. tostring(err),
+						Duration = 3
+					})
+				end
+				savedhouse = houseData
+				local furniturecost = 0
+				for _, v in pairs(savedhouse.furniture or {}) do
+					if furnituresdb[v.id] then furniturecost += furnituresdb[v.id].cost or 0 end
+				end
+				local texturecost = 0
+				for _, v in pairs(savedhouse.textures or {}) do
+					if texturesdb.walls[v.walls] then texturecost += texturesdb.walls[v.walls].cost or 0 end
+					if texturesdb.floors[v.floors] then texturecost += texturesdb.floors[v.floors].cost or 0 end
+				end
+				local t_count = counttextures(savedhouse.textures)
+				local amb = savedhouse.ambiance and "Yes" or "No"
+				local typ = savedhouse.building_type or "-"
+				task.spawn(setscaninfo, countfurnitures(savedhouse.furniture), furniturecost, t_count, texturecost, amb,
+					typ)
+				Rayfield:Notify({ Title = "Success", Content = "House loaded from file: " .. selected, Duration = 3 })
+				refreshFileDropdown()
+			end,
+		})
+
+		CreateFileTab:CreateButton({
+			Name = "Delete Selected House",
+			Callback = function()
+				local selected = fileDropdown.CurrentOption
+				if type(selected) == "table" then selected = selected[1] end
+				if not selected or selected == "" then
+					return Rayfield:Notify({ Title = "Error", Content = "No house selected to delete.", Duration = 3 })
+				end
+				if pendingDelete == selected then
+					selected = getBaseFileName(selected)
+					local filePath = houseFilesPath .. "/" .. selected
+					local existsOk, exists = pcall(isfile, filePath)
+					if existsOk and exists then
+						local deleteOk, deleteErr = pcall(delfile, filePath)
+						if not deleteOk then
+							return Rayfield:Notify({ Title = "Error", Content = "Delete failed: " .. tostring(deleteErr), Duration = 4 })
+						end
+						Rayfield:Notify({
+							Title = "Deleted",
+							Content = selected .. " has been deleted.",
+							Duration = 3,
+							Image =
+							"circle-check"
+						})
+						pendingDelete = nil
+						refreshFileDropdown()
+					else
+						Rayfield:Notify({ Title = "Error", Content = "File not found: " .. selected, Duration = 3 })
+					end
+				else
+					pendingDelete = selected
+					Rayfield:Notify({
+						Title = "Confirm Delete",
+						Content = "Are you sure you want to delete **" ..
+							selected .. "**?\n\nClick the Delete button again to confirm.",
+						Duration = 10,
+						Image = "circle-alert",
+					})
+				end
+			end,
+		})
+
+		CreateFileTab:CreateButton({
+			Name = "Refresh List",
+			Callback = function()
+				refreshFileDropdown()
+				Rayfield:Notify({ Title = "Refreshed", Content = "File list updated and sorted", Duration = 2 })
+			end,
+		})
+
+		do
+			local ConverterTab = Window:CreateTab("Converter", "repeat")
+			local convertPath = houseFSPath .. "/Convert"
+			local sourceCloner = "Rage"
+			local selectedFile = nil
+			local outputName = ""
+			local busy = false
+			local sourceDropdown
+			local status = ConverterTab:CreateLabel("Put source JSON files in HouseFS/Convert, then refresh the list.",
+				"info")
+
+			local function ensureFolders()
+				for _, path in ipairs({ houseFSPath, convertPath, houseFilesPath }) do
+					if not isfolder(path) then makefolder(path) end
+				end
+			end
+
+			local function refreshSources()
+				local ok, err = pcall(function()
+					ensureFolders()
+					local options = {}
+					for _, path in ipairs(listfiles(convertPath)) do
+						local name = getBaseFileName(path)
+						if name:lower():sub(-5) == ".json" and isfile(convertPath .. "/" .. name) then
+							table.insert(options, name)
+						end
+					end
+					table.sort(options, naturalSort)
+					if not table.find(options, selectedFile) then selectedFile = options[1] end
+					sourceDropdown:Refresh(options, true)
+					if selectedFile then
+						sourceDropdown:Set({ selectedFile })
+					end
+					status:Set("Source files: " .. #options .. " | Folder: HouseFS/Convert")
+				end)
+				if not ok then status:Set("Cannot read Convert folder: " .. tostring(err)) end
+			end
+
+			local function convertSource(data, cloner)
+				local function requireValue(condition, message)
+					if not condition then error(message, 0) end
+				end
+				local function finite(value)
+					return type(value) == "number" and value == value and math.abs(value) < math.huge
+				end
+				local function array(value, length)
+					if type(value) ~= "table" or #value ~= length then return false end
+					local count = 0
+					for key in pairs(value) do
+						if type(key) ~= "number" or key % 1 ~= 0 or key < 1 or key > length then return false end
+						count = count + 1
+					end
+					return count == length
+				end
+				requireValue(type(data) == "table", "JSON must contain a house object.")
+				local items = cloner == "Rage" and data.furniture or data.furnitures
+				local houseType = cloner == "Rage" and data.building_type or data.buildingType
+
+				if cloner == "Rage" then
+					items = data.furniture; houseType = data.building_type
+				end
+				requireValue(type(items) == "table",
+					"This file does not match " .. cloner .. ". Check the Source Cloner selection.")
+				requireValue(type(houseType) == "string" and houseType:match("%S"), "Missing house type.")
+				if cloner == "TBI" then requireValue(array(items, #items), "TBI furniture must be a list.") end
+				local result = {
+					furniture = {},
+					textures = {},
+					building_type = resolveExactHouseType(houseType),
+					ambiance =
+						data.ambiance
+				}
+				local count, cost = 0, 0
+				for key, item in pairs(items) do
+					requireValue(type(item) == "table" and type(item.id) == "string" and item.id ~= "",
+						"Invalid furniture ID at " .. tostring(key))
+					requireValue(array(item.cframe, 12), "Invalid CFrame for " .. item.id)
+					for _, value in ipairs(item.cframe) do
+						requireValue(finite(value),
+							"Invalid CFrame number for " .. item.id)
+					end
+					requireValue(item.scale == nil or (finite(item.scale) and item.scale > 0),
+						"Invalid scale for " .. item.id)
+					requireValue(item.colors == nil or type(item.colors) == "table", "Invalid colors for " .. item.id)
+					local converted = deepCopy(item)
+					converted.colors = {}
+					for channel, color in pairs(item.colors or {}) do
+						local index = tonumber(channel)
+						requireValue(index and index >= 1 and index % 1 == 0, "Invalid color index for " .. item.id)
+						requireValue(array(color, 3), "Invalid RGB color for " .. item.id)
+						for _, value in ipairs(color) do
+							requireValue(finite(value) and value >= 0 and value <= 1,
+								"RGB color outside 0-1 for " .. item.id)
+						end
+						requireValue(converted.colors[index] == nil, "Duplicate color index for " .. item.id)
+						converted.colors[index] = color
+					end
+
+					result.furniture[tostring(key)] = converted
+					count = count + 1
+					local db = furnituresdb[item.id]
+					cost = cost + (db and db.cost or 0)
+				end
+				requireValue(data.textures == nil or type(data.textures) == "table", "Invalid textures.")
+				if cloner == "TBI" then
+					local textures = data.textures or {}
+					requireValue(array(textures, #textures), "TBI textures must be a list.")
+					for _, entry in ipairs(textures) do
+						requireValue(
+							type(entry) == "table" and type(entry.room) == "string" and type(entry.id) == "string",
+							"Invalid TBI texture entry.")
+						requireValue(entry.type == "walls" or entry.type == "floors", "Unknown texture type.")
+						result.textures[entry.room] = result.textures[entry.room] or {}
+						requireValue(result.textures[entry.room][entry.type] == nil,
+							"Duplicate texture for " .. entry.room)
+						result.textures[entry.room][entry.type] = entry.id
+					end
+				else
+					result.textures = deepCopy(data.textures or {})
+				end
+				for room, surfaces in pairs(result.textures) do
+					requireValue(type(room) == "string" and type(surfaces) == "table", "Invalid room textures.")
+					for surface, id in pairs(surfaces) do
+						requireValue((surface == "walls" or surface == "floors") and type(id) == "string",
+							"Invalid texture in " .. room)
+						local db = texturesdb[surface] and texturesdb[surface][id]
+						cost = cost + (db and db.cost or 0)
+					end
+				end
+				requireValue(result.ambiance == nil or type(result.ambiance) == "table", "Invalid ambiance.")
+				result.furniture_quantity = count
+				result.total_cost = cost
+				result.saved_by = "Cubix-HouseCloner"
+
+				return serializeAutoPasteValue(deserializeFileValue(result)), count
+			end
+
+			ConverterTab:CreateDropdown({
+				Name = "Source Cloner",
+				Options = { "Rage", "TBI" },
+				CurrentOption = { "Rage" },
+				MultipleOptions = false,
+				Flag = "ConverterSourceCloner",
+				Callback = function(value)
+					local choice = type(value) == "table" and value[1] or value
+					if choice == "Rage" or choice == "TBI" then sourceCloner = choice end
+				end,
+			})
+			sourceDropdown = ConverterTab:CreateDropdown({
+				Name = "File to Convert",
+				Options = {},
+				CurrentOption = {},
+				MultipleOptions = false,
+				Flag = "ConverterFile",
+				Callback = function(value) selectedFile = type(value) == "table" and value[1] or value end,
+			})
+			ConverterTab:CreateInput({
+				Name = "Save As (optional)",
+				PlaceholderText = "Defaults to source filename",
+				RemoveTextAfterFocusLost = false,
+				Callback = function(value) outputName = tostring(value or "") end,
+			})
+			ConverterTab:CreateButton({ Name = "Refresh Convert Files", Callback = refreshSources })
+			ConverterTab:CreateButton({
+				Name = "Convert & Save",
+				Callback = function()
+					if busy then return end
+					if not selectedFile or selectedFile == "" then
+						return Rayfield:Notify({
+							Title = "Converter",
+							Content =
+							"Put a JSON file in HouseFS/Convert, refresh, and select it.",
+							Duration = 5
+						})
+					end
+					busy = true
+					local ok, filename, count = pcall(function()
+						ensureFolders()
+						local sourceName = getBaseFileName(selectedFile)
+						local raw = readfile(convertPath .. "/" .. sourceName)
+						local decoded = HttpService:JSONDecode(raw)
+						local converted, itemCount = convertSource(decoded, sourceCloner)
+						local encoded = HttpService:JSONEncode(converted)
+						local base = sanitizeFileName(outputName:match("%S") and outputName or sourceName)
+						if not base then error("Enter a valid output filename.", 0) end
+						local name, suffix = base .. ".json", 2
+						while isfile(houseFilesPath .. "/" .. name) do
+							name = base .. " (" .. suffix .. ").json"
+							suffix = suffix + 1
+						end
+						local path = houseFilesPath .. "/" .. name
+						writefile(path, encoded)
+						if readfile(path) ~= encoded then error("Saved file verification failed: " .. name, 0) end
+						return name, itemCount
+					end)
+					busy = false
+					if not ok then
+						status:Set("Conversion failed: " .. tostring(filename))
+						return Rayfield:Notify({ Title = "Conversion Failed", Content = tostring(filename), Duration = 7 })
+					end
+					local refreshed = pcall(refreshFileDropdown)
+					status:Set("Saved " .. filename .. " | " .. count .. " furniture items")
+					Rayfield:Notify({
+						Title = "Converted & Saved",
+						Content = "HouseFS/Houses/" ..
+							filename ..
+							(refreshed and "\nAvailable in Saved Houses and Auto Paste." or "\nUse Refresh List to update Saved Houses."),
+						Duration = 6
+					})
+				end
+			})
+			refreshSources()
+		end
+	end
 	initializeFileManagementTabs()
 
 	local function initializeTeleportAndStartup()
-	local Teleport = Window:CreateTab("Teleport", "map-pin")
-	Teleport:CreateSection("House Teleports")
+		local Teleport = Window:CreateTab("Teleport", "map-pin")
+		Teleport:CreateSection("House Teleports")
 
-	local function loadinterior(interiortype, name)
-		local load = require(game:GetService("ReplicatedStorage").Fsys).load
-		local interiors = load("InteriorsM")
-		local enter = interiors.enter
-		if interiortype == "interior" then enter(name, "", {}) return end
-		if interiortype == "house" then enter("housing", "MainDoor", { house_owner = name }) end
-	end
-
-	local teleportPlayerName = ""
-	Teleport:CreateInput({
-		Name = "Player Name",
-		PlaceholderText = "Enter username or display name...",
-		RemoveTextAfterFocusLost = false,
-		Callback = function(value)
-			teleportPlayerName = tostring(value or ""):gsub("^%s+", ""):gsub("%s+$", "")
-		end,
-	})
-
-	Teleport:CreateButton({
-		Name = "Enter House",
-		Callback = function()
-			local query = string.lower(teleportPlayerName)
-			local target = nil
-			if query ~= "" then
-				for _, player in ipairs(Players:GetPlayers()) do
-					if string.lower(player.Name) == query then
-						target = player
-						break
-					end
-				end
-				if not target then
-					for _, player in ipairs(Players:GetPlayers()) do
-						if string.lower(player.DisplayName) == query then
-							target = player
-							break
-						end
-					end
-				end
+		local function loadinterior(interiortype, name)
+			local load = require(game:GetService("ReplicatedStorage").Fsys).load
+			local interiors = load("InteriorsM")
+			local enter = interiors.enter
+			if interiortype == "interior" then
+				enter(name, "", {})
+				return
 			end
+			if interiortype == "house" then enter("housing", "MainDoor", { house_owner = name }) end
+		end
 
-			if target then
-				loadinterior("house", target)
-			else
-				Rayfield:Notify({
-					Title = "House Teleports",
-					Content = "Enter the username or display name of someone currently in the server.",
-					Duration = 3,
-				})
-			end
-		end,
-	})
+		local function getplayernames()
+			local players = Players:GetPlayers()
+			local names = table.create(#players)
+			for i, player in ipairs(players) do names[i] = player.Name end
+			return names
+		end
 
-	Teleport:CreateButton({
-		Name = "Teleport to My House",
-		Callback = function()
-			local lp = Players.LocalPlayer
-			if lp then loadinterior("house", lp) end
-		end,
-	})
+		local selectedplayer = Teleport:CreateDropdown({
+			Name = "Select Player",
+			Options = getplayernames(),
+			CurrentOption = { getplayernames()[1] },
+			MultipleOptions = false,
+			Flag = "TeleportPlayer",
+			Callback = function(_) end,
+		})
 
-	refreshOwnedHouses()
+		Players.PlayerAdded:Connect(function() selectedplayer:Refresh(getplayernames()) end)
+		Players.PlayerRemoving:Connect(function() selectedplayer:Refresh(getplayernames()) end)
 
-	pcall(function()
-		ClientData.register_callback_plus_existing("house_manager", function()
-			refreshOwnedHouses()
-		end)
-	end)
+		Teleport:CreateButton({
+			Name = "Enter House",
+			Callback = function()
+				local target = Players:FindFirstChild(selectedplayer.CurrentOption[1])
+				if target then loadinterior("house", target) end
+			end,
+		})
 
-	task.spawn(function()
-		local lastSignature = nil
+		Teleport:CreateButton({
+			Name = "Teleport to My House",
+			Callback = function()
+				local lp = Players.LocalPlayer
+				if lp then loadinterior("house", lp) end
+			end,
+		})
 
-		local function getHouseManagerSignature()
-			local parts = {}
-			local ok, manager = pcall(function()
-				return ClientData.get("house_manager") or {}
+		refreshOwnedHouses()
+
+		pcall(function()
+			ClientData.register_callback_plus_existing("house_manager", function()
+				refreshOwnedHouses()
 			end)
+		end)
 
-			if not ok or type(manager) ~= "table" then
-				return nil
-			end
+		task.spawn(function()
+			local lastSignature = nil
 
-			for _, house in pairs(manager) do
-				table.insert(parts,
-					tostring(house.house_id or "")
+			local function getHouseManagerSignature()
+				local parts = {}
+				local ok, manager = pcall(function()
+					return ClientData.get("house_manager") or {}
+				end)
+
+				if not ok or type(manager) ~= "table" then
+					return nil
+				end
+
+				for _, house in pairs(manager) do
+					table.insert(parts,
+						tostring(house.house_id or "")
 						.. "|" .. tostring(house.name or "")
 						.. "|" .. tostring(house.building_type or house.kind or house.type or "")
-				)
+					)
+				end
+
+				table.sort(parts)
+				return table.concat(parts, ";")
 			end
 
-			table.sort(parts)
-			return table.concat(parts, ";")
-		end
-
-		while true do
-			local signature = getHouseManagerSignature()
-			if signature ~= nil and signature ~= lastSignature then
-				lastSignature = signature
-				refreshOwnedHouses()
+			while true do
+				local signature = getHouseManagerSignature()
+				if signature ~= nil and signature ~= lastSignature then
+					lastSignature = signature
+					refreshOwnedHouses()
+				end
+				task.wait(2)
 			end
-			task.wait(2)
-		end
-	end)
+		end)
 
-	pasteHistory = safeReadJSON(pasteHistoryPath) or {}
-	freshPurchases = safeReadJSON(freshPurchasesPath) or {}
-	pasteCheckpoint = safeReadJSON(pasteCheckpointPath)
-	if pasteCheckpoint and pasteCheckpoint.state == "idle" then pasteCheckpoint = nil end
-	refreshOwnedHouses()
-	local loadCallOk, loadedOk, loadInfo = pcall(loadAutoPasteConfig)
-	if not loadCallOk then
-		warn("[Cubix AutoSave] Failed to load Auto Paste config: " .. tostring(loadedOk))
-	elseif loadedOk == false and loadInfo ~= "No saved Auto Paste config found" then
-		warn("[Cubix AutoSave] " .. tostring(loadInfo))
+		pasteHistory = safeReadJSON(pasteHistoryPath) or {}
+		freshPurchases = safeReadJSON(freshPurchasesPath) or {}
+		pasteCheckpoint = safeReadJSON(pasteCheckpointPath)
+		if pasteCheckpoint and pasteCheckpoint.state == "idle" then pasteCheckpoint = nil end
+		refreshOwnedHouses()
+		local loadCallOk, loadedOk, loadInfo = pcall(loadAutoPasteConfig)
+		if not loadCallOk then
+			warn("[Cubix AutoSave] Failed to load Auto Paste config: " .. tostring(loadedOk))
+		elseif loadedOk == false and loadInfo ~= "No saved Auto Paste config found" then
+			warn("[Cubix AutoSave] " .. tostring(loadInfo))
+		end
+		autoPasteConfigReady = true
+		autoSaveAutoPasteConfig()
+
+		task.spawn(function()
+			local deadline = tick() + 10
+			repeat
+				local ok = pcall(function()
+					ClientData.get("inventory")
+				end)
+				if ok then break end
+				task.wait(0.25)
+			until tick() >= deadline
+
+			ensureTradeLicenseInHotbar()
+		end)
+
+		Rayfield:Notify({ Title = "Cubix", Content = "Loaded successfully!", Duration = 5 })
 	end
-	autoPasteConfigReady = true
-	-- Re-sync after the config has finished loading and every label exists.
-	pcall(rebuildQueueLabel)
-	pcall(setAPFileInfo)
-	task.delay(0.5, function()
-		pcall(rebuildQueueLabel)
-		pcall(setAPFileInfo)
-	end)
-	autoSaveAutoPasteConfig()
-
-	task.spawn(function()
-		
-		local deadline = tick() + 10
-		repeat
-			local ok = pcall(function()
-				ClientData.get("inventory")
-			end)
-			if ok then break end
-			task.wait(0.25)
-		until tick() >= deadline
-
-		ensureTradeLicenseInHotbar()
-	end)
-
-	Rayfield:Notify({ Title = "Cubix", Content = "Loaded successfully!", Duration = 5 })
-	end 
 	initializeTeleportAndStartup()
 end
 
 local startupOk, startupErr = xpcall(loadMain, function(err)
-    local trace = (debug and type(debug.traceback) == "function") and debug.traceback(tostring(err), 2) or tostring(err)
-    warn("[Cubix Mobile Startup Error] " .. trace)
-    return trace
+	local trace = (debug and type(debug.traceback) == "function") and debug.traceback(tostring(err), 2) or tostring(err)
+	warn("[Cubix Mobile Startup Error] " .. trace)
+	return trace
 end)
 if not startupOk then
-    warn("[Cubix] Startup failed. See the error printed above: " .. tostring(startupErr))
+	warn("[Cubix] Startup failed. See the error printed above: " .. tostring(startupErr))
 end
