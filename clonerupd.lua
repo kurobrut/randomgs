@@ -3067,122 +3067,167 @@ local function loadMain()
 	local lastTradeCount = -1
 
 	do
-		-- Reference Auto Trade popup behavior: hide DialogApp.Dialog only.
-		-- No TradeApp disabling, HintApp destruction, or ToolsFrame modifications.
+		-- Only disables NormalDialog and Backing.
 		local playerGui = plr:WaitForChild("PlayerGui")
 		local active = false
 		local popupConnections = {}
-		local currentDialog = nil
-		local originallyVisible = nil
+		local trackedTargets = {}
 		local updating = false
-		local currentDialogConnection = nil
+
+		local targetNames = { "NormalDialog", "Backing" }
+
+		local function disconnectConnection(connection)
+			if connection then
+				pcall(function()
+					connection:Disconnect()
+				end)
+			end
+		end
+
+		local function restoreTargets()
+			for instance, state in pairs(trackedTargets) do
+				disconnectConnection(state.connection)
+
+				if instance and instance.Parent and state.originalVisible ~= nil then
+					pcall(function()
+						instance.Visible = state.originalVisible
+					end)
+				end
+
+				trackedTargets[instance] = nil
+			end
+		end
 
 		local function disconnectPopupConnections()
 			for _, connection in ipairs(popupConnections) do
-				pcall(function() connection:Disconnect() end)
+				disconnectConnection(connection)
 			end
 			table.clear(popupConnections)
 		end
 
-		local function restoreDialog()
-			if currentDialog and currentDialog.Parent and originallyVisible ~= nil then
-				updating = true
-				pcall(function() currentDialog.Visible = originallyVisible end)
-				updating = false
-			end
-			currentDialog = nil
-			originallyVisible = nil
-		end
+		local function getDialogTargets()
+			local dialogApp = playerGui:FindFirstChild("DialogApp")
+			local dialog = dialogApp and dialogApp:FindFirstChild("Dialog")
 
-		local function findDialog()
-			local app = playerGui:FindFirstChild("DialogApp")
-			local dialog = app and app:FindFirstChild("Dialog")
-			if dialog and dialog:IsA("GuiObject") then
-				return dialog
+			if not dialog then
+				return {}
 			end
-			return nil
-		end
 
-		local function hideDialog()
-			if not active then return end
-			local dialog = findDialog()
-			if not dialog then return end
-			if currentDialog ~= dialog then
-				-- When the game recreates its dialog, detach only the old listener.
-				if currentDialogConnection then
-					pcall(function() currentDialogConnection:Disconnect() end)
+			local targets = {}
+
+			for _, name in ipairs(targetNames) do
+				local target = dialog:FindFirstChild(name)
+
+				if target and target:IsA("GuiObject") then
+					targets[name] = target
 				end
-				restoreDialog()
-				currentDialog = dialog
-				originallyVisible = dialog.Visible
-				currentDialogConnection = dialog:GetPropertyChangedSignal("Visible"):Connect(function()
-					if active and not updating and dialog.Visible then
-						updating = true
-						dialog.Visible = false
-						updating = false
-					end
-				end)
-				table.insert(popupConnections, currentDialogConnection)
 			end
-			if dialog.Visible then
-				updating = true
-				dialog.Visible = false
-				updating = false
+
+			return targets
+		end
+
+		local function scanAndHideTargets()
+			if not active then return end
+
+			local targets = getDialogTargets()
+
+			for _, name in ipairs(targetNames) do
+				local target = targets[name]
+
+				if target and not trackedTargets[target] then
+					local state = {
+						originalVisible = target.Visible,
+						connection = nil,
+					}
+
+					trackedTargets[target] = state
+
+					state.connection = target:GetPropertyChangedSignal("Visible"):Connect(function()
+						if active and not updating and target.Visible then
+							updating = true
+							pcall(function()
+								target.Visible = false
+							end)
+							updating = false
+						end
+					end)
+				end
+
+				if target and target.Visible then
+					updating = true
+					pcall(function()
+						target.Visible = false
+					end)
+					updating = false
+				end
 			end
 		end
 
 		local function setPopupDisabled(value)
 			active = value == true
 			disconnectPopupConnections()
-			currentDialogConnection = nil
-			restoreDialog()
-			if not active then return end
+
+			if not active then
+				restoreTargets()
+				return
+			end
+
 			table.insert(popupConnections, playerGui.DescendantAdded:Connect(function(obj)
-				if obj.Name == "DialogApp" or obj.Name == "Dialog" then
-					task.defer(hideDialog)
+				if obj.Name == "DialogApp"
+					or obj.Name == "Dialog"
+					or obj.Name == "NormalDialog"
+					or obj.Name == "Backing" then
+					task.defer(scanAndHideTargets)
 				end
 			end))
-			hideDialog()
+
+			scanAndHideTargets()
 		end
 
 		local env = (getgenv and getgenv()) or _G
+
 		if type(env.__CubixStopTradePopupHiding) == "function" then
 			pcall(env.__CubixStopTradePopupHiding)
 		end
+
 		env.__CubixStopTradePopupHiding = function()
 			env.__CubixPopupStartupToken = (env.__CubixPopupStartupToken or 0) + 1
 			setPopupDisabled(false)
 		end
 
-		local popupToggle = TradeTab:CreateToggle({
+		TradeTab:CreateToggle({
 			Name = "Disable Trade Popups",
 			CurrentValue = false,
 			Flag = "CubixDisableTradePopupsDialogOnlyV5",
 			Callback = setPopupDisabled,
 		})
 
-		-- Autoexecute-safe: wait until the character and the game dialog exist.
-		-- Only DialogApp.Dialog is ever changed by the popup controller.
+		-- Wait for the UI without hiding the parent DialogApp.
 		env.__CubixPopupStartupToken = (env.__CubixPopupStartupToken or 0) + 1
 		local myToken = env.__CubixPopupStartupToken
+
 		task.spawn(function()
 			local character = plr.Character or plr.CharacterAdded:Wait()
+
 			if not character:WaitForChild("Humanoid", 30)
 				or not character:WaitForChild("HumanoidRootPart", 30) then
-				warn("[Cubix Popup] Character not ready; leaving popup toggle off")
+				warn("[Cubix Popup] Character not ready")
 				return
 			end
+
 			local dialogApp = playerGui:WaitForChild("DialogApp", 40)
 			local dialog = dialogApp and dialogApp:WaitForChild("Dialog", 30)
-			if not (dialog and dialog:IsA("GuiObject")) then
-				warn("[Cubix Popup] Dialog not ready; leaving popup toggle off")
+
+			if not dialog then
+				warn("[Cubix Popup] Dialog path not ready")
 				return
 			end
-			task.wait(2) -- Extra time for Adopt Me's UI initialization
+
+			task.wait(2)
+
 			if env.__CubixPopupStartupToken ~= myToken then return end
-			--pcall(function() popupToggle:Set(true) end)
-			--setPopupDisabled(true)
-			print("[Cubix Popup] Character and UI loaded; DialogApp.Dialog hiding enabled")
+
+			print("[Cubix Popup] Enabled")
 		end)
 	end
 
