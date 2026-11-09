@@ -389,7 +389,7 @@ local function initializeHouseTradeQueue(ctx)
 				end
 
 				ctx.setSelectedPlayer(previousPlayer)
-				ctx.getAutoTradeEnabled() = previousAutoTrade
+				ctx.setAutoTradeEnabled(previousAutoTrade)
 				ctx.resetActiveTrade()
 				houseTradeRunning = false
 				houseTradeStopRequested = false
