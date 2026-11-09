@@ -160,6 +160,12 @@ local function initializeHouseTradeQueue(ctx)
 	local queuePlayerDropdown
 	local queueHouseDropdown
 	local queueStatusLabel
+	local queueStateLabel
+	local queueCurrentLabel
+	local queueProgressLabel
+	local queueRecipientLabel
+	local queueCompleted = 0
+	local queueTotal = 0
 
 	local function queueNotify(title, content, duration)
 		pcall(function()
@@ -167,16 +173,34 @@ local function initializeHouseTradeQueue(ctx)
 		end)
 	end
 
+	--// ---------- LABEL HELPERS ----------
+	local function setLabel(label, text)
+		if not label then return end
+		pcall(function() label:Set(text) end)
+	end
+
+	local function setQueueState(text) setLabel(queueStateLabel, "Status: " .. text) end
+	local function setQueueCurrent(text) setLabel(queueCurrentLabel, "Current: " .. text) end
+	local function setQueueProgress()
+		if houseTradeRunning then
+			setLabel(queueProgressLabel, "Progress: " .. queueCompleted .. "/" .. queueTotal .. " traded")
+		else
+			setLabel(queueProgressLabel, "Progress: -")
+		end
+	end
+	local function setQueueRecipient()
+		setLabel(queueRecipientLabel, "Selected Player: " .. (queueSelectedPlayer or "None"))
+	end
+
 	local function updateHouseTradeQueueLabel()
 		if not queueStatusLabel then return end
 		local lines = {}
 		for index, entry in ipairs(houseTradeQueue) do
-			table.insert(lines, tostring(index) .. ". " .. tostring(entry.player) .. " -> " .. tostring(entry.name))
+			local marker = (index == 1 and houseTradeRunning) and "▶ " or "• "
+			table.insert(lines, marker .. tostring(index) .. ". " .. tostring(entry.name) .. "  →  " .. tostring(entry.player))
 		end
 		local display = #lines > 0 and table.concat(lines, "\n") or "Queue is empty."
-		pcall(function()
-			queueStatusLabel:Set("House Trade Queue (" .. #houseTradeQueue .. ")\n" .. display)
-		end)
+		setLabel(queueStatusLabel, "Queued Houses (" .. #houseTradeQueue .. ")\n" .. display)
 	end
 
 	local function refreshQueuePlayers()
@@ -195,7 +219,14 @@ local function initializeHouseTradeQueue(ctx)
 		end)
 	end
 
-	HouseTradeQueueTab:CreateLabel("Assign houses to individual players. Each house is listed for its assigned player only.")
+	--// ---------- INFO ----------
+	HouseTradeQueueTab:CreateSection("How It Works")
+	HouseTradeQueueTab:CreateLabel("1) Pick a player   2) Pick houses   3) Add to queue   4) Start.", "info")
+	HouseTradeQueueTab:CreateLabel("Each house is spawned, listed and traded ONLY to its assigned player, one at a time.", "info")
+
+	--// ---------- STEP 1: PLAYER ----------
+	HouseTradeQueueTab:CreateSection("Step 1 - Choose Recipient")
+	queueRecipientLabel = HouseTradeQueueTab:CreateLabel("Selected Player: None", "user")
 
 	queuePlayerDropdown = HouseTradeQueueTab:CreateDropdown({
 		Name = "Select Player",
@@ -204,15 +235,19 @@ local function initializeHouseTradeQueue(ctx)
 		MultipleOptions = false,
 		Callback = function(option)
 			local value = type(option) == "table" and option[1] or option
-			if value == "None" or value == "No ctx.Players Online" then
+			if value == "None" or value == "No Players Online" or value == "No ctx.Players Online" then
 				queueSelectedPlayer = nil
 			else
 				queueSelectedPlayer = value
 			end
+			setQueueRecipient()
 		end,
 	})
 
-	HouseTradeQueueTab:CreateButton({ Name = "Refresh ctx.Players", Callback = refreshQueuePlayers })
+	HouseTradeQueueTab:CreateButton({ Name = "Refresh Players", Callback = refreshQueuePlayers })
+
+	--// ---------- STEP 2: HOUSES ----------
+	HouseTradeQueueTab:CreateSection("Step 2 - Choose Houses")
 
 	queueHouseDropdown = HouseTradeQueueTab:CreateDropdown({
 		Name = "Select Houses",
@@ -230,6 +265,9 @@ local function initializeHouseTradeQueue(ctx)
 	})
 
 	HouseTradeQueueTab:CreateButton({ Name = "Refresh Owned Houses", Callback = refreshQueueHouses })
+
+	--// ---------- STEP 3: BUILD QUEUE ----------
+	HouseTradeQueueTab:CreateSection("Step 3 - Build Queue")
 
 	HouseTradeQueueTab:CreateButton({
 		Name = "Add Selected Houses To Player Queue",
@@ -268,7 +306,7 @@ local function initializeHouseTradeQueue(ctx)
 		end,
 	})
 
-	queueStatusLabel = HouseTradeQueueTab:CreateLabel("House Trade Queue (0)\nQueue is empty.")
+	queueStatusLabel = HouseTradeQueueTab:CreateLabel("Queued Houses (0)\nQueue is empty.", "list")
 
 	HouseTradeQueueTab:CreateButton({
 		Name = "Remove Last Queue Entry",
@@ -291,6 +329,13 @@ local function initializeHouseTradeQueue(ctx)
 		end,
 	})
 
+	--// ---------- LIVE STATUS ----------
+	HouseTradeQueueTab:CreateSection("Live Status")
+	queueStateLabel = HouseTradeQueueTab:CreateLabel("Status: Idle", "activity")
+	queueCurrentLabel = HouseTradeQueueTab:CreateLabel("Current: -", "home")
+	queueProgressLabel = HouseTradeQueueTab:CreateLabel("Progress: -", "trending-up")
+
+	--// ---------- QUEUE LOGIC ----------
 	local function queuePlayerIsOnline(username)
 		for _, player in ipairs(ctx.Players:GetPlayers()) do
 			if player ~= ctx.Players.LocalPlayer and string.lower(player.Name) == string.lower(username) then
@@ -316,6 +361,8 @@ local function initializeHouseTradeQueue(ctx)
 		if not ctx.getOwnedHouseById(id) then return false, "House is no longer in your inventory." end
 		if not queuePlayerIsOnline(username) then return false, username .. " is no longer online." end
 
+		setQueueState("Spawning house")
+		setQueueCurrent(name .. "  →  " .. username)
 		queueNotify("House Trade Queue", "Spawning " .. name .. " for " .. username)
 		local spawnOk, spawnError = pcall(function()
 			ctx.Router.get("HousingAPI/SpawnHouse"):FireServer(id)
@@ -339,12 +386,14 @@ local function initializeHouseTradeQueue(ctx)
 		ctx.setAutoTradeEnabled(true)
 		ctx.resetActiveTrade()
 
+		setQueueState("Listing house")
 		queueNotify("House Trade Queue", "Listing " .. name .. " for " .. username)
 		local listOk, listResult = pcall(function()
 			return ctx.Router.get("HousingAPI/ListHouse"):InvokeServer(id)
 		end)
 		if not listOk then return false, "Listing failed: " .. tostring(listResult) end
 
+		setQueueState("Waiting for " .. username .. " to trade")
 		local traded = ctx.waitUntilHouseGone(id, 300, function()
 			return not houseTradeStopRequested and queuePlayerIsOnline(username) ~= nil
 		end)
@@ -352,6 +401,9 @@ local function initializeHouseTradeQueue(ctx)
 		if houseTradeStopRequested then return false, "Stopped." end
 		return false, "Trade timed out or the assigned player disconnected."
 	end
+
+	--// ---------- STEP 4: CONTROLS ----------
+	HouseTradeQueueTab:CreateSection("Step 4 - Controls")
 
 	HouseTradeQueueTab:CreateButton({
 		Name = "START HOUSE TRADE QUEUE",
@@ -364,13 +416,21 @@ local function initializeHouseTradeQueue(ctx)
 
 			houseTradeRunning = true
 			houseTradeStopRequested = false
+			queueCompleted = 0
+			queueTotal = #houseTradeQueue
 			local previousPlayer = ctx.getSelectedPlayer()
 			local previousAutoTrade = ctx.getAutoTradeEnabled()
+
+			setQueueState("Running")
+			setQueueProgress()
+			updateHouseTradeQueueLabel()
 
 			task.spawn(function()
 				local failureMessage = nil
 				while #houseTradeQueue > 0 and not houseTradeStopRequested do
 					local entry = houseTradeQueue[1]
+					setQueueState("Waiting for " .. entry.player .. " to join")
+					setQueueCurrent(entry.name .. "  →  " .. entry.player)
 					queueNotify("House Trade Queue", "Waiting for " .. entry.player)
 					local player = queueWaitForPlayer(entry.player, 120)
 					if not player then
@@ -384,6 +444,8 @@ local function initializeHouseTradeQueue(ctx)
 					end
 					queueNotify("House Trade Queue", entry.name .. " completed for " .. entry.player)
 					table.remove(houseTradeQueue, 1)
+					queueCompleted += 1
+					setQueueProgress()
 					updateHouseTradeQueueLabel()
 					task.wait(1)
 				end
@@ -396,12 +458,17 @@ local function initializeHouseTradeQueue(ctx)
 				updateHouseTradeQueueLabel()
 
 				if failureMessage then
+					setQueueState("Paused - " .. failureMessage)
 					queueNotify("House Trade Queue Paused", failureMessage .. " Remaining entries were kept.", 6)
 				elseif #houseTradeQueue == 0 then
+					setQueueState("Finished - all houses traded")
 					queueNotify("House Trade Queue", "All assigned houses completed!")
 				else
+					setQueueState("Stopped - remaining entries kept")
 					queueNotify("House Trade Queue", "Queue stopped. Remaining entries were kept.")
 				end
+				setQueueCurrent("-")
+				setQueueProgress()
 			end)
 		end,
 	})
@@ -411,12 +478,12 @@ local function initializeHouseTradeQueue(ctx)
 		Callback = function()
 			if not houseTradeRunning then return queueNotify("House Trade Queue", "Queue is not running.") end
 			houseTradeStopRequested = true
+			setQueueState("Stopping...")
 			queueNotify("House Trade Queue", "Stop requested. Current operation will stop safely.")
 		end,
 	})
 
 	updateHouseTradeQueueLabel()
-
 end
 
 local function loadMain()
